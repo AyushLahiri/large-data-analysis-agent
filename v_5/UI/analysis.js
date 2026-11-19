@@ -540,6 +540,10 @@
         continue;
       }
       thinking = null;
+      if (message.kind === 'scope') {
+        target.append(scopeNotice(message));
+        continue;
+      }
       const user = message.agent === 'You';
       const wrap = el('article', undefined, `message ${user ? 'user' : ''} ${message.kind === 'error' ? 'error' : ''}`);
       wrap.append(el('span', user ? 'You' : 'Analysis', 'author'));
@@ -555,6 +559,33 @@
     selectTurn(newMessage ? '' : activeTurn);
     chat.scrollTop = atBottom || newMessage ? chat.scrollHeight : oldScroll;
     chatScroll();
+  }
+
+  /**
+   * Build the collapsible notice shown when the folder scope changes between questions.
+   *
+   * Inputs: message: scope message with details.project_name and details.tree folder records.
+   * Returns: Unattached disclosure listing the project and its folders.
+   * Details: Selected items get a soft highlight; the project itself is highlighted when every
+   *     folder is selected.
+   */
+  function scopeNotice(message) {
+    const {project_name: projectName, tree = []} = message.details || {};
+    const notice = disclosure(`analysis-scope-${message.id}`, message.text || 'Updated folder scope', 'scope-notice');
+    const item = (label, selected) => el('span', label, `scope-notice-item${selected ? ' is-selected' : ''}`);
+    const root = el('ul', undefined, 'scope-notice-tree');
+    const project = el('li');
+    project.append(item(projectName || 'Entire project', tree.length > 0 && tree.every(entry => entry.selected)));
+    const folders = el('ul');
+    for (const entry of tree) {
+      const row = el('li');
+      row.append(item(entry.name, entry.selected));
+      folders.append(row);
+    }
+    project.append(folders);
+    root.append(project);
+    notice.append(root);
+    return notice;
   }
 
   /**

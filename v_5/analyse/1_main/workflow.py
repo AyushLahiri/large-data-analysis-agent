@@ -2,7 +2,7 @@ import psycopg2
 import re
 from v_5.analyse.general import ResultLimit, progress
 from v_5.analyse.main.agent import ORCHESTRATOR, OrchestratorReply
-from v_5.analyse.main.analyst import Analyst
+from v_5.analyse.main.analyst import Analyst, scope_update
 from v_5.analyse.main.memory import AnalysisMemory, user_message
 from v_5.analyse.sql_assets.catalog import AtlasCatalog, codebook_themes, read_atlas
 from v_5.analyse.sql_assets.joins import save_join_rules
@@ -86,9 +86,11 @@ def analyse(session, project, folder, question):
              'Identifying what the question needs.' if question else 'Reading the project summary and available topics.')
     markdown = project_markdown(session.path)
     memory = AnalysisMemory(session)
+    change = scope_update(session) if question else None
     history = memory.seed({'project_markdown': markdown, 'project_name': project['context']['name'],
                            'selected_folder': folder or None, 'published_scope': published_scope(session, project, folder),
                            'saved_weights': session.state.get('weights', {}),
+                           **({'scope_update': change} if change else {}),
                            'question': question, 'opening_turn': not bool(question)})
     outcome = {}
     decimal_places = 2

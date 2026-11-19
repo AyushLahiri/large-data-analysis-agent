@@ -13,7 +13,8 @@ from v_5.main_functions.sql import (
 
 VARIABLE_FIELDS = (
     'variable_name', 'column_name', 'variable_label', 'variable_description', 'variable_type',
-    'theme', 'subtheme', 'categories', 'battery_members', 'battery_summary', 'table_name', 'table_names',
+    'pct_missing', 'theme', 'subtheme', 'categories', 'other_information',
+    'battery_members', 'battery_summary', 'table_name', 'table_names',
 )
 
 
@@ -64,8 +65,8 @@ def candidate_rows(rows):
     """Condense codebook matches into a small candidate list.
 
     Inputs: rows: ranked codebook records, including optional battery membership.
-    Returns: At most ten candidate dicts with short category previews and grouped battery
-        descriptions.
+    Returns: At most ten candidate dicts with short category previews, missingness, source
+        notes and grouped battery descriptions.
     Details: VariableSearch uses the first thirty hits, coalesces members of the same
         battery and retains locations needed for later exact selection.
     """
@@ -81,6 +82,8 @@ def candidate_rows(rows):
         seen.add(key)
         out = {key: row.get(key) for key in VARIABLE_FIELDS if key not in {'battery_members', 'battery_summary'}}
         out['categories'] = category_preview(out['categories'])
+        if (out['other_information'] or '').strip().casefold() == 'not in source':
+            out['other_information'] = ''
         if members:
             out['battery_members'] = members
             out['variable_description'] = row.get('battery_summary') or out['variable_description']

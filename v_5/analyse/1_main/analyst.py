@@ -16,6 +16,18 @@ from v_5.analyse.sql_assets.joins import JOIN_SKILL, candidate_identifiers, read
 from v_5.app.docker import run_code
 
 
+def scope_update(session):
+    """Return the folder-scope change saved on the current question's turn.
+
+    Inputs: session: analysis chat with turn_id and turns.
+    Returns: Dict with now_in_scope/previously_in_scope folder records, or None if unchanged.
+    Details: Set by the chat route when the user's selection differs from the previous
+        question; shared by the orchestrator and analyst seeds.
+    """
+    turn = next((item for item in session.state.get('turns', []) if item['id'] == session.turn_id), None)
+    return (turn or {}).get('scope_update')
+
+
 def format_method(method):
     """Normalize the method note shown with an analysis result.
 
@@ -137,9 +149,11 @@ class Analyst:
         active_weights = {key: dict(val) for key, val in session.state.get('weights', {}).items() if key in catalog.folders}
         pending_weights, weight_folders, results = {}, set(), []
         loaded_skills = set()
+        change = scope_update(session)
         history = self.memory.seed({'original_user_question': self.question, 'relayed_user_request': task,
                                     'scope': catalog.context(), 'saved_weights': active_weights,
-                                    'raw_preview_allowed': allow_preview, 'display_decimal_places': decimal_places})
+                                    'raw_preview_allowed': allow_preview, 'display_decimal_places': decimal_places,
+                                    **({'scope_update': change} if change else {})})
         recent = recent_variables_text(session.state, catalog.folders)
         if recent:
             history.append({'role': 'user', 'content': recent})

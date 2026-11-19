@@ -5,6 +5,7 @@ import shutil
 import threading
 import traceback
 from contextlib import nullcontext
+from datetime import datetime, timezone
 from flask import jsonify, request
 from pathlib import Path
 from uuid import uuid4
@@ -18,6 +19,59 @@ from v_5.analyse.managers.turns import complete_turn, initialize_turns, new_turn
 from v_5.analyse.sql_assets.catalog import AtlasCatalog
 from v_5.main_functions.session import Session, write_json
 from v_5.main_functions.sql import published_folders
+
+
+SCOPE_FILE = 'analysis_scope.json'
+
+
+def scope_tree(project, folder):
+    """List the project's published folders and mark the ones in the selected scope.
+
+    Inputs: project: project state with atlas.data; folder: selected key, blank for all.
+    Returns: Folder records with display name, physical tables and a selected flag.
+    Details: Mirrors the analysis scope picker, which offers the entire project or one folder.
+    """
+    groups = {}
+    for table in project.get('atlas', {}).get('data', []):
+        key = table['folder']
+        label = (project.get('folders', {}).get(key) or {}).get('display_name') or table.get('dataset_name') or key
+        groups.setdefault(key, {'folder': key, 'name': label, 'tables': []})['tables'].append(table['name'])
+    return [{**item, 'selected': not folder or item['folder'] == folder} for item in groups.values()]
+
+
+def update_scope(path, project, chat_id, state, folder):
+    """Save a chat's folder selection and report whether it changed since the last question.
+
+    Inputs: path: project directory; project: published state; chat_id: key; state: chat
+        state; folder: selected key or blank for the entire project.
+    Returns: None when unchanged, otherwise a dict with the agents' note and the UI tree.
+    Details: One project-level file, analysis_scope.json, holds the latest selection per chat
+        and is overwritten on each change. A chat without a saved entry compares against its
+        last question's folder, or the entire project when it has none.
+    """
+    tree = scope_tree(project, folder)
+    selected = sorted(item['folder'] for item in tree if item['selected'])
+    target = path / SCOPE_FILE
+    saved = json.loads(target.read_text(encoding='utf-8')) if target.is_file() else {}
+    chats = saved.get('chats', {})
+    previous = chats.get(chat_id, {}).get('selected')
+    if previous is None:
+        asked = [turn for turn in state['turns'] if turn.get('question_id')]
+        last = asked[-1]['folder'] if asked else None
+        previous = sorted(item['folder'] for item in tree if not last or item['folder'] == last)
+    if previous == selected and chat_id in chats:
+        return None
+    chats[chat_id] = {'selection': folder or 'entire_project', 'selected': selected, 'tree': tree,
+                      'updated': datetime.now(timezone.utc).isoformat()}
+    write_json(target, {'project_id': project['id'], 'chats': chats})
+    if previous == selected:
+        return None
+    names = {item['folder']: item['name'] for item in tree}
+    return {
+        'agents': {'now_in_scope': [{'folder': key, 'name': names[key]} for key in selected],
+                   'previously_in_scope': [{'folder': key, 'name': names.get(key, key)} for key in previous]},
+        'details': {'project_name': project.get('context', {}).get('name') or '', 'tree': tree},
+    }
 
 
 def register_analysis(app, read_project, lock, analysis_jobs):
@@ -198,6 +252,11 @@ def register_analysis(app, read_project, lock, analysis_jobs):
                 if moved:
                     staged.rename(archive)
                 raise
+            scope_file = path / SCOPE_FILE
+            if scope_file.is_file():
+                saved = json.loads(scope_file.read_text(encoding='utf-8'))
+                if saved.get('chats', {}).pop(chat_id, None) is not None:
+                    write_json(scope_file, saved)
             if staged.exists():
                 try:
                     shutil.rmtree(staged)
@@ -312,8 +371,16 @@ def register_analysis(app, read_project, lock, analysis_jobs):
             state = read_state(path, chat_id)
             if not text and any(message['agent'] == 'analysis_orchestrator' for message in state['messages']):
                 return jsonify(ok=True)
+            change = update_scope(path, project, chat_id, state, folder) if text else None
+            if change:
+                # Shown before the question and kept outside the turn, so it is never taken as an answer.
+                state['messages'].append({'id': uuid4().hex, 'agent': 'analysis', 'text': 'Updated folder scope',
+                                          'kind': 'scope', 'details': change['details'],
+                                          'time': datetime.now(timezone.utc).isoformat()})
             state.update(status='running', activity='Understanding your question')
             turn = new_turn(state['turns'], text, folder) if text else None
+            if turn and change:
+                turn['scope_update'] = change['agents']
             session = Session(path, state, analysis=True, turn_id=turn['id'] if turn else None, analysis_directory=archive)
             analysis_jobs[job] = session
             if turn:

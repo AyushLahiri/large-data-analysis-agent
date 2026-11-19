@@ -21,20 +21,23 @@ def sample_positions(size, first, extra):
     return head + sorted(random.Random(17).sample(rest, min(extra, len(rest))))
 
 
-def read_text(path, first=30, random_count=30, encoding="utf-8-sig"):
+def read_text(path, first=30, random_count=30, encoding="utf-8-sig", max_chars=None):
     """Preview a text file while counting all its lines.
 
     Inputs: path: source file; first/random_count: leading and later line counts; encoding:
-        text decoder.
+        text decoder; max_chars: optional per-line character limit.
     Returns: Dict with line_count and lines containing one-based line numbers and text.
-    Details: Used by file reviewers and loader context. Streams the file and keeps a
-        fixed-size random sample instead of retaining every line.
+        A line cut at max_chars also has clipped_chars, the number of characters omitted.
+    Details: Used by file reviewers, directly and through read_delimited/read_layout. Streams
+        the file and keeps a fixed-size random sample instead of retaining every line.
     """
     head, reservoir, count = [], [], 0
     rng = random.Random(17)
     with open(path, encoding=encoding, errors="replace") as source:
         for count, line in enumerate(source, 1):
             item = {"line": count, "text": line.rstrip("\r\n")}
+            if max_chars and len(item["text"]) > max_chars:
+                item.update(text=item["text"][:max_chars], clipped_chars=len(item["text"]) - max_chars)
             if count <= first:
                 head.append(item)
             elif len(reservoir) < random_count:
@@ -45,6 +48,20 @@ def read_text(path, first=30, random_count=30, encoding="utf-8-sig"):
                 if position < random_count:
                     reservoir[position] = item
     return {"line_count": count, "lines": head + sorted(reservoir, key=lambda x: x["line"])}
+
+
+def read_delimited(path, first=10, random_count=10, max_chars=2000, encoding="utf-8-sig"):
+    """Preview a CSV/TSV file as raw numbered lines, without parsing it.
+
+    Inputs: path: source file; first/random_count: leading and later line counts;
+        max_chars: per-line character limit; encoding: text decoder.
+    Returns: Text-preview dict with line_count and numbered lines; long lines carry
+        clipped_chars.
+    Details: Used for CSV/TSV file review. No delimiter, quoting, header or type rules are
+        applied, so the reviewer sees the file as written. The line limit keeps very wide
+        files within a reviewer's context.
+    """
+    return read_text(path, first, random_count, encoding, max_chars)
 
 
 def read_layout(path, first=30, random_count=30, encoding="utf-8-sig"):
@@ -183,15 +200,17 @@ def excel_shapes(path):
 
 
 def read_table(path, first=10, random_count=10, rows=5,
-               delimiter=",", encoding="utf-8-sig", sheet=0):
+               delimiter=",", encoding="utf-8-sig", sheets=6):
     """Build a bounded preview for a tabular upload.
 
     Inputs: path: source; first/random_count: sampled columns; rows: preview limit;
-        delimiter/encoding: text parsing; sheet: workbook sheet index.
+        delimiter/encoding: text parsing; sheets: number of leading workbook sheets to preview.
     Returns: Dict of dimensions, sampled_types and string-valued sample rows, plus
-        format-specific metadata.
-    Details: Dispatches CSV/Excel/statistical readers for file review. Counts full records
-        separately from the small preview so shape and sample are not confused.
+        format-specific metadata. Excel returns sheet_previews for the first sheets and
+        other_sheets with only the name and shape of the rest.
+    Details: File review uses it for Excel and SPSS/Stata; CSV/TSV review uses read_delimited,
+        so the CSV branch is no longer called there. Counts full records separately from the
+        small preview so shape and sample are not confused.
     """
     fmt = FORMATS[Path(path).suffix.lower()]
     metadata = {}
@@ -203,14 +222,26 @@ def read_table(path, first=10, random_count=10, rows=5,
             path, sep=delimiter, encoding=encoding, usecols=[columns[0]], chunksize=5000, dtype=str))
         metadata["shape_basis"] = "Parsed data records, excluding the header and blank lines; quoted multiline records count once."
     elif fmt == "excel":
+        shapes = {shape["sheet"]: shape for shape in excel_shapes(path)}
+        def shape(name):
+            return {"sheet": name, **{key: shapes.get(name, {}).get(key) for key in ("row_count", "column_count")}}
+        previews = []
         with pd.ExcelFile(path) as book:
-            columns = pd.read_excel(book, sheet_name=sheet, nrows=0).columns.tolist()
-            frame = pd.read_excel(book, sheet_name=sheet,
-                usecols=sample_positions(len(columns), first, random_count), nrows=rows, dtype=str)
-            metadata = {"sheets": book.sheet_names, "sampled_sheet": book.sheet_names[sheet]}
-        shapes = excel_shapes(path)
-        metadata.update(row_count=shapes[sheet]["row_count"], sheet_shapes=shapes,
-                        shape_basis="First row is the header; rows through the last populated row, including internal blank rows.")
+            names = book.sheet_names
+            for name in names[:sheets]:
+                preview = shape(name)
+                # One unreadable sheet (for example a chart sheet) must not hide the others.
+                try:
+                    columns = pd.read_excel(book, sheet_name=name, nrows=0).columns.tolist()
+                    frame = pd.read_excel(book, sheet_name=name, nrows=rows, dtype=str,
+                        usecols=sample_positions(len(columns), first, random_count)) if columns else pd.DataFrame()
+                    preview.update(preview_rows=len(frame), sample=frame.astype(str).to_dict(orient="records"))
+                except Exception as error:
+                    preview["read_error"] = str(error)
+                previews.append(preview)
+        return {"sheet_count": len(names), "sheet_previews": previews,
+                "other_sheets": [shape(name) for name in names[sheets:]],
+                "shape_basis": "First row of each sheet is the header; rows through the last populated row, including internal blank rows."}
     else:
         frame, metadata = read_statistical(path, first, random_count, rows)
         columns = range(metadata["column_count"])

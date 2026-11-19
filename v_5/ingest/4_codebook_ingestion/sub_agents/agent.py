@@ -148,6 +148,9 @@ CODEBOOK_TABLE_PROMPT = """
   Markdown file, and a concise verification report. No dataset statistics or analysis.
 - You receive its filename/path, project and ingestion context, loader handoff and
   installed packages. Inspect the source structure before choosing a reading strategy.
+- source_file.finding.parser_rules and source_file.ingestion_preview are the ingestion
+  reviewer's reading advice and the small preview it saw. Use them as leads in Phase 1
+  and confirm them with code; they are not verified facts.
 - Inventory every Excel sheet, including notes and hidden sheets. Examine shapes,
   headers and small samples, then programmatically read all relevant definitions.
 - Preserve documented battery membership, eligibility and skip rules, and recode

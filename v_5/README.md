@@ -181,6 +181,39 @@ A descriptives correction returns to the same loader loop. Each folder is
 published before the next folder is prepared; the final summary covers the
 completed project.
 
+### File previews and parsing context
+
+Initial ingestion reads each file once with a fixed, bounded reader from `readers.py`.
+File reviewers cannot run code; they interpret these previews:
+
+- CSV/TSV: `read_delimited` sends raw, unparsed lines, the first 10 and up to 10 sampled,
+  with line numbers and the physical `line_count`. Bytes are decoded as UTF-8, so
+  undecodable bytes appear as `�`. Lines over 2,000 characters are cut and carry
+  `clipped_chars`.
+- Excel: `read_table` previews the first 6 sheets in workbook order, each with up to
+  5 rows from the first 10 and up to 10 sampled columns, the first row read as the
+  header. Later sheets list only their name and shape. An unreadable sheet has `read_error`.
+- SPSS/Stata: 5 rows from up to 20 sampled columns, with embedded definitions and
+  all-row statistics for those columns.
+- PDF: the first 3 and up to 5 sampled pages. Text, DCT/DCF, MAP and DAT: the first 30
+  and up to 30 sampled lines.
+
+Each format prompt in `1_initial_ingestion/sub_agents/agent.py` states exactly what was
+sent and how it was decoded. Every `FileReply` includes `parser_rules`: up to five
+bullets of at most 30 words on what code must handle to read that file, such as the
+delimiter, encoding, header location, relevant sheets, layouts, missing codes and leading
+zeros. Files that no code will read, such as reports, return an empty list.
+
+The ingestion handoff saves findings and previews by file ID. The loader receives them
+unchanged, as `files[<id>].finding` and `initial_file_context[<id>]`, with `/input/...`
+paths. No reading functions are prepared for it: it confirms reader settings with its
+own code. It reads a codebook only when a reading, key or type decision needs it, with
+narrow code that returns the minimal rows, lines or pages. Full codebook extraction
+stays in phase 4, where `codebook_table_agent` receives its own finding and preview in
+`source_file` as leads to confirm. PDF codebooks use the fixed page-by-page reader and
+do not consume parser rules. Handoffs saved before this change keep their older preview
+shapes and have no `parser_rules`; the loader passes on whatever was saved.
+
 The loader retains its 250,000-token session budget and 8,000-token turn output
 reserve. Its subagent summarizes history in 60,000-character chunks, retaining
 saved work and the latest payload. Codebook calls have their own 250,000-token

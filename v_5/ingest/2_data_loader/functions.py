@@ -1,6 +1,4 @@
 import json
-import pandas as pd
-import pyreadstat
 from .checkpoint import LoaderRunner
 from .calls import LoaderCalls
 from .state import loader_workspace
@@ -11,7 +9,6 @@ from v_5.ingest.codebook_ingestion.functions import complete_codebooks, saved_co
 from v_5.ingest.data_loader.agent import LOADER_PROMPT
 from v_5.ingest.descriptives_check.functions import review_prepared_data
 from v_5.ingest.manifest import validate_prepared_manifest
-from v_5.ingest.readers import read_pdf, read_text
 from v_5.ingest.reuse import copy_prepared_inputs, source_for_folder, whole_folder_copy
 from v_5.ingest.summary import summary_ready, write_final_summary
 from v_5.main_functions.sql import published_folders
@@ -59,59 +56,7 @@ def prepare_data(session, project_notes, folder_notes, files, findings, previews
                 raise RuntimeError(f"Environment check failed: {detail}")
         return environment
 
-    # Larger initial context for the loader; ingestion's own reads stay unchanged.
     EXISTING_TABLES = ["survey", "survey_part1", "respondents"]  # Prototype schema inventory.
-
-
-    def loader_file_context(file, is_data):
-        """Build the loader's evidence for one source file.
-
-        Inputs: file: upload metadata; is_data: whether it is a primary/continuation; captures
-            saved previews.
-        Returns: Format-specific preview or embedded dictionary for the folder payload.
-        Details: Phase 2 uses existing bounded values for data, richer statistical metadata when
-            available, and larger document reads for supporting evidence.
-        """
-        path, fmt = file["path"], file["format"]
-        if is_data:
-            preview = previews.get(file["file_id"], {})
-            samples = [{k: v for k, v in list(row.items())[:10]}
-                       for row in preview.get("sample", [])]
-            result = {"shape": {k: preview[k] for k in ("row_count", "column_count", "line_count") if k in preview},
-                      "first_10_columns_values": samples,
-                      "preview_scope": "Existing bounded ingestion values; loader must verify parsing and shape."}
-            if fmt in {"spss", "dta"}:
-                reader = {".sav": pyreadstat.read_sav, ".zsav": pyreadstat.read_sav,
-                          ".por": pyreadstat.read_por, ".dta": pyreadstat.read_dta}[Path(path).suffix.lower()]
-                options = {"metadataonly": True, "disable_datetime_conversion": True}
-                if Path(path).suffix.lower() != ".por":
-                    options["user_missing"] = True
-                _, meta = reader(path, **options)
-                # Include every available per-variable metadata mapping, not just labels.
-                result["embedded_codebook"] = {name: {key: value[name]
-                    for key, value in vars(meta).items() if isinstance(value, dict) and name in value}
-                    for name in meta.column_names[:20]}
-                result["embedded_scope"] = "First 20 variables; embedded definitions take precedence. Remaining definitions can be queried from the source file."
-            elif not samples:
-                result["raw_preview"] = read_text(path, first=30, random_count=0)
-            return result
-        if fmt == "pdf":
-            return {"executed_function": "read_pdf", "parameters": {"first": 6, "random_count": 10},
-                    "extract": read_pdf(path, first=6, random_count=10)}
-        if fmt in {"csv", "tsv", "excel"}:
-            if fmt == "excel":
-                with pd.ExcelFile(path) as book:
-                    extracts = {sheet: pd.read_excel(book, sheet_name=sheet, nrows=100,
-                        dtype=str, keep_default_na=False).to_dict(orient="records") for sheet in book.sheet_names}
-            else:
-                frame = pd.read_csv(path, sep="\t" if fmt == "tsv" else ",", nrows=100,
-                                    dtype=str, keep_default_na=False)
-                extracts = {"columns": frame.columns.tolist(), "records": frame.to_dict(orient="records")}
-            return {"scope": "First 100 complete records, all columns; Excel includes each sheet.", "extract": extracts}
-        return {"executed_function": "read_text", "parameters": {"first": 200, "random_count": 100},
-                "scope": "Line-numbered extract; definitions at boundaries may be incomplete. Use targeted lookups when needed.",
-                "extract": read_text(path, first=200, random_count=100)}
-
 
     if decision["action"] != "finish":
         raise RuntimeError("Finish the ingestion conversation before loading its folders.")
@@ -159,17 +104,18 @@ def prepare_data(session, project_notes, folder_notes, files, findings, previews
             workspace = loader_workspace(session, folder, workspace)
 
         def make_context():
-            """Build initial folder evidence only until its completed payload is saved."""
+            """Build initial folder evidence only until its completed payload is saved.
+
+            Details: Each file's evidence is the preview its ingestion reviewer saw; the loader
+                writes its own code for any further reading.
+            """
             extracts = {}
             for file_id, file in folder_files.items():
                 if (reuse_source and file_id in data_ids) or file.get('reuse_codebook'):
                     extracts[file_id] = {'reused': True, 'instruction': 'Use the selected saved data/codebook outputs; this source is not being reingested.'}
                     continue
-                try:
-                    extracts[file_id] = loader_file_context(file, file_id in data_ids)
-                except Exception as error:
-                    # A failed initial extract is visible to the loader; it can choose its reader.
-                    extracts[file_id] = {"extract_error": str(error), "instruction": "Inspect the supplied file path with an appropriate reader."}
+                extracts[file_id] = previews.get(file_id) or {
+                    'instruction': 'No ingestion preview was saved for this file. Inspect it with code.'}
             ingestion_notes = folder_notes.get(folder, {})
             primary_name = ingestion_notes.get('primary_codebook')
             external = next((key for key, file in folder_files.items()
