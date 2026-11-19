@@ -1,0 +1,8 @@
+dictionary {
+ str4 member_id "Library member identifier"
+ int age "Age in years"
+ byte branch "1 North; 2 Central; 3 South"
+ int books_borrowed "Books borrowed in October 2025"
+ byte satisfaction "1 Very poor to 5 Excellent"
+ double monthly_fee "Membership fee in dollars"
+}

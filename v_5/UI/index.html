@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>V5 · Data workspace</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/" aria-label="Data workspace home"><span class="brand-mark">v5</span><span>Data workspace</span></a>
+  <div class="project-switch"><label class="sr-only" for="projects">Choose a project</label><select id="projects"><option value="">Choose a project</option></select></div>
+  <span class="local-badge"><i></i> Local workspace</span>
+</header>
+<div id="notice" class="notice" role="alert" hidden></div>
+<main>
+  <div class="page-heading"><div><p class="eyebrow">YOUR MATERIALS, MADE READY</p><div class="project-title"><h1 id="title">A little clarity for your data.</h1><button id="rename" class="icon-button" aria-label="Rename project" title="Rename project" hidden>✎</button><button id="delete-project" class="delete-box delete-project" aria-label="Delete project" title="Delete project" hidden>Delete project</button></div><p id="subtitle">Start with a dataset. We’ll help you make sense of the rest.</p></div><span id="status" class="status-pill">No project selected</span></div>
+  <div id="workspace-tabs" class="workspace-tabs" hidden>
+    <button id="view-analyse" class="primary" type="button">Analyse</button>
+    <button id="view-ingest" class="secondary" type="button">Ingest a new dataset into the project</button>
+    <span id="ingest-indicator" class="muted small"></span>
+  </div>
+  <div id="ingest-workspace" class="workspace">
+    <section class="chat-panel panel" aria-labelledby="chat-title">
+      <div class="panel-heading"><div><span class="eyebrow">WORK TOGETHER</span><h2 id="chat-title">Conversation</h2></div><button id="stop" type="button" aria-label="Stop ingestion" title="Stop ingestion" hidden></button></div>
+      <div id="chat" class="chat-stream" aria-live="polite" aria-relevant="additions"></div>
+      <div id="live-thinking" class="live-thinking" hidden><span class="thinking-orb"></span><span>Thinking</span><span class="dots" aria-label="Working"><i></i><i></i><i></i></span><span id="activity">Reviewing your materials</span></div>
+      <div class="composer">
+        <div id="question-form"></div>
+        <p id="pending" class="muted"></p>
+        <label class="sr-only" for="reply">Your reply</label><textarea id="reply" rows="1" placeholder="Your answer…" disabled></textarea>
+        <div class="composer-actions"><span id="composer-hint" class="muted small">Your next question will appear in chat. You can add extra details in your responses here.</span><button id="send" class="primary" disabled>Send reply <span aria-hidden="true">↑</span></button><button id="prepare" class="primary" hidden>Prepare data →</button></div>
+      </div>
+      <details class="run-details"><summary>Preparation results &amp; activity</summary><p id="budget" class="muted small"></p><div id="phases"></div><div id="logs"></div></details>
+    </section>
+    <section class="materials-panel panel" aria-labelledby="materials-title"><div class="library-toolbar"><button id="new" class="secondary">＋ New Project</button></div>
+      <div class="panel-heading"><div><span class="eyebrow">PROJECT LIBRARY</span><h2 id="materials-title">Materials</h2></div><span id="file-count" class="count-badge">0 files</span></div>
+      <div class="materials-content">
+        <details class="guidance"><summary>How to organise your uploads</summary><ol><li><strong>Start with the main data file.</strong> A folder is created automatically, with no questionnaire yet.</li><li><strong>Add and tag the remaining files.</strong> Each upload opens a tagging window. Multiple files use Save and next.</li><li><strong>Choose Complete ingestion.</strong> Review any exact copies, answer the file questions, and save the folder.</li><li><strong>Add more folders or begin.</strong> Saving a form unlocks the next folder. Choose Ingest materials when all your folder forms are ready.</li></ol><p>A related lookup or geographic dataset gets its own folder. Original uploads and your descriptions remain saved locally.</p></details>
+        <div id="context"></div><div id="folder-progress" class="folder-progress" hidden></div><div id="tree" class="tree"></div>
+        <button id="dataset" class="upload-slot" disabled><span>＋</span> Add new data and related materials</button>
+        <div id="atlas-result" class="atlas-result" hidden></div>
+      </div>
+      <div class="materials-footer"><div class="before-ingestion"><label for="before-note">Anything specific before we begin? <span class="muted">(optional)</span></label><textarea id="before-note" rows="2" placeholder="Anomalies, special handling or things to look out for. For example: −99 means missing, or preserve leading zeros."></textarea></div><span id="save-state" class="muted small">Your files stay on this computer.</span><div class="actions"><button id="save" class="secondary" disabled>Save notes</button><button id="ingest" class="primary" disabled>Ingest materials →</button><button id="retry-ingestion" class="secondary" type="button" hidden>Retry ingestion</button><button id="publish" class="secondary" type="button" hidden>Publish to Atlas</button></div><p id="retry-reason" class="muted small" role="status" hidden></p><p id="ingest-error" class="error" role="alert"></p></div>
+    </section>
+  </div>
+  <div id="analyse-workspace" class="workspace analyse-workspace" hidden>
+    <nav class="panel analysis-chats" aria-labelledby="analysis-chats-title">
+      <div class="panel-heading"><h2 id="analysis-chats-title">Chats</h2></div>
+      <div class="analysis-chats-body">
+        <button id="analysis-new-chat" class="secondary" type="button">+ New chat</button>
+        <p id="analysis-chats-error" class="form-error" role="alert"></p>
+        <ul id="analysis-chat-list"></ul>
+      </div>
+    </nav>
+    <section class="panel analysis-chat" aria-labelledby="analyse-title">
+      <div class="panel-heading"><h2 id="analyse-title">Analyse</h2><div class="analysis-links">
+        <a id="analysis-transcript" class="small" hidden>Transcript</a><a id="analysis-log" class="small" hidden>Activity log</a>
+      </div></div>
+      <div class="analysis-stream">
+        <div id="analysis-chat" class="chat-stream" aria-live="polite" tabindex="0"></div>
+        <button id="analysis-latest" class="analysis-latest" type="button" aria-label="Back to latest message" title="Back to latest message" hidden>↓</button>
+      </div>
+      <div id="analysis-activity" class="live-thinking" hidden><span class="thinking-orb"></span><span>Thinking</span><span class="dots" aria-hidden="true"><i></i><i></i><i></i></span><span id="analysis-stage" role="status"></span></div>
+      <form id="analysis-form" class="composer">
+        <label class="sr-only" for="analysis-question">Ask a question about your data</label>
+        <textarea id="analysis-question" rows="2" placeholder="Ask about your data or plan an analysis…" required></textarea>
+        <div class="composer-actions"><span id="analysis-error" class="form-error" role="alert"></span><button id="analysis-send" class="primary" type="submit" disabled>Send <span aria-hidden="true">↑</span></button><button id="analysis-stop" type="button" aria-label="Stop analysis" title="Stop analysis" hidden></button></div>
+      </form>
+    </section>
+    <nav id="analysis-turns" class="panel analysis-turns" aria-label="Analysis turns" hidden>
+      <h3>Turns</h3>
+      <div id="analysis-turn-list" class="analysis-turn-list"></div>
+      <div id="analysis-turn-preview" class="analysis-turn-preview" hidden></div>
+    </nav>
+    <aside class="panel analysis-scope" aria-labelledby="scope-title">
+      <div class="panel-heading"><h2 id="scope-title">Analysis scope</h2></div>
+      <div class="scope-body">
+        <div id="analysis-tree" role="group" aria-labelledby="scope-title"></div>
+        <p class="scope-help muted">Select a folder for faster, targeted answers. The entire project is selected by default and can find the right dataset for your question.</p>
+      </div>
+    </aside>
+  </div>
+</main>
+<dialog id="name-dialog" class="name-dialog"><form id="name-form"><div class="dialog-heading"><h2 id="name-title">New project</h2><button type="button" class="icon-button close-dialog" data-dialog="name-dialog" aria-label="Close">×</button></div><p id="name-description" class="muted">Give this collection of related datasets a name.</p><label for="project-name">Project name</label><input id="project-name" maxlength="200" required autocomplete="off" placeholder="e.g. Household energy study"><p id="name-error" class="form-error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary close-dialog" data-dialog="name-dialog">Cancel</button><button id="name-submit" class="primary" type="submit">Create project</button></div></form></dialog>
+<dialog id="upload" class="upload-dialog"><form id="upload-form"><div class="dialog-heading"><div><p class="eyebrow" id="upload-destination"></p><h2 id="upload-title">Add materials</h2></div><button type="button" class="icon-button close-dialog" data-dialog="upload" aria-label="Close">×</button></div><div class="upload-body"><p id="upload-help" class="muted"></p><div id="dropzone" class="dropzone"><span class="upload-symbol" aria-hidden="true">↑</span><strong>Drop files here</strong><span class="muted small">or choose them from your computer</span><label class="file-picker">Choose files<input id="files" type="file" aria-label="Choose files"></label></div><div id="dataset-name-wrap" hidden><label for="dataset-name">Dataset name <span class="muted">(optional)</span></label><input id="dataset-name" placeholder="Taken from the file name if left blank"></div><div id="selected-files"></div><p id="upload-error" class="form-error" role="alert"></p></div><div class="dialog-actions"><span id="selected-count" class="muted small">No files selected</span><button type="button" class="secondary close-dialog" data-dialog="upload">Cancel</button><button id="upload-submit" class="primary" type="submit" disabled>Add to project</button></div></form></dialog>
+<dialog id="delete-dialog" class="name-dialog"><form id="delete-form"><div class="dialog-heading"><h2 id="delete-title">Delete file?</h2><button type="button" class="icon-button close-dialog" data-dialog="delete-dialog" aria-label="Close">×</button></div><p id="delete-description"></p><p id="delete-error" class="form-error" role="alert"></p><div class="dialog-actions"><button type="button" class="secondary close-dialog" data-dialog="delete-dialog">Cancel</button><button id="delete-submit" type="submit" class="danger">Delete</button></div></form></dialog>
+<dialog id="folder-setup" class="upload-dialog" aria-labelledby="setup-title">
+  <form id="setup-form">
+    <div class="dialog-heading"><div><p id="setup-progress" class="eyebrow"></p><h2 id="setup-title">Review your files</h2></div><button type="button" class="icon-button close-dialog" data-dialog="folder-setup" aria-label="Close file review">×</button></div>
+    <div class="upload-body"><div id="setup-body"></div><p id="setup-error" class="form-error" role="alert"></p></div>
+    <div class="dialog-actions"><button id="setup-back" type="button" class="secondary" hidden>← Back</button><button type="button" class="secondary close-dialog" data-dialog="folder-setup">Close</button><button id="setup-submit" type="submit" class="primary">Save and next</button></div>
+  </form>
+</dialog>
+<dialog id="continuation-warning" class="name-dialog" aria-labelledby="continuation-warning-title" aria-describedby="continuation-warning-text">
+  <div class="dialog-heading"><h2 id="continuation-warning-title">Keep separate datasets in separate folders</h2><button id="continuation-warning-close" type="button" class="delete-box" aria-label="Please read this reminder" disabled></button></div>
+  <p id="continuation-warning-text"></p>
+  <p class="muted small">Close this reminder to save the tag and continue.</p>
+  <div class="dialog-actions"><button id="continuation-warning-back" type="button" class="secondary">Back to tagging</button></div>
+</dialog>
+<dialog id="analysis-delete-dialog" class="name-dialog" aria-labelledby="analysis-delete-title">
+  <form id="analysis-delete-form">
+    <div class="dialog-heading"><h2 id="analysis-delete-title">Delete chat?</h2><button type="button" class="icon-button close-dialog" data-dialog="analysis-delete-dialog" aria-label="Close">×</button></div>
+    <p id="analysis-delete-description"></p>
+    <p id="analysis-delete-error" class="form-error" role="alert"></p>
+    <div class="dialog-actions"><button type="button" class="secondary close-dialog" data-dialog="analysis-delete-dialog">Cancel</button><button id="analysis-delete-submit" type="submit" class="danger">Delete chat</button></div>
+  </form>
+</dialog>
+<dialog id="analysis-feedback-dialog" class="name-dialog analysis-feedback-dialog" aria-labelledby="analysis-feedback-title">
+  <form id="analysis-feedback-form">
+    <div class="dialog-heading"><h2 id="analysis-feedback-title">Feedback</h2><button type="button" class="icon-button close-dialog" data-dialog="analysis-feedback-dialog" aria-label="Close">×</button></div>
+    <label for="analysis-feedback-comment">Please tell us what went wrong.</label>
+    <textarea id="analysis-feedback-comment" rows="3" required></textarea>
+    <p id="analysis-feedback-error" class="form-error" role="alert"></p>
+    <div class="dialog-actions"><button type="button" class="secondary close-dialog" data-dialog="analysis-feedback-dialog">Cancel</button><button id="analysis-feedback-submit" type="submit" class="primary">Send feedback</button></div>
+  </form>
+</dialog>
+<dialog id="materials-check" class="name-dialog" aria-labelledby="materials-check-title">
+  <div class="dialog-heading"><h2 id="materials-check-title">Supporting materials</h2><button type="button" class="icon-button close-dialog" data-dialog="materials-check" aria-label="Back to materials">×</button></div>
+  <ul id="missing-materials"></ul>
+  <p class="muted">If you don’t have these files, use the ingestion details to explain what the data measures, any special codes, or anything we should watch for.</p>
+  <div class="dialog-actions"><button id="add-ingestion-details" type="button" class="secondary">Add ingestion details</button><button id="continue-ingestion" type="button" class="primary">Continue to ingestion</button></div>
+</dialog>
+<script src="/static/vendor/markdown-it-15.0.3.min.js"></script>
+<script src="/static/app.js"></script>
+<script src="/static/analysis.js"></script>
+</body></html>
