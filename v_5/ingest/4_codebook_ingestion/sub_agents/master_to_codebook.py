@@ -108,21 +108,22 @@ def reconcile_master_names(session, master, matched, unmatched, entries, taxonom
                                    {name: matched[name] for name in targets}, entries).fillna('')
         history, counter = [], {'used': 0, 'thread': 1 + start // BATCH_SIZE}
         common = {**metadata, 'taxonomy': deepcopy(taxonomy), 'known_batteries': known_batteries(matched),
-                  'master_variable_names': master['variable_name'].tolist(),
                   'target_columns': list(target_frame.columns), 'source_columns': list(source_frame.columns)}
         saved_input = ((checkpoint.state['agent'] or {}).get('input', {}) if checkpoint else {})
         if saved_input.get('stage') == 'reconcile':
             searches = saved_input['search_results']
         else:
-            reply = agent_turn(session, 'master_to_codebook_reconciler', MASTER_TO_CODEBOOK_PROMPT, history,
-                               {**common, 'stage': 'search', 'target_rows': target_frame.to_dict('records')},
-                               MasterCodebookSearchReply, counter, allow_user_questions=False, checkpoint=checkpoint)
-            try:
-                searches = search_candidates(reply['candidates'], targets, source_rows)
-            except ValueError as error:
-                if checkpoint:
-                    checkpoint.next_input({'feedback': str(error)})
-                raise
+            while True:
+                reply = agent_turn(session, 'master_to_codebook_reconciler', MASTER_TO_CODEBOOK_PROMPT, history,
+                                   {**common, 'stage': 'search', 'target_rows': target_frame.to_dict('records')},
+                                   MasterCodebookSearchReply, counter, allow_user_questions=False, checkpoint=checkpoint)
+                try:
+                    searches = search_candidates(reply['candidates'], targets, source_rows)
+                    break
+                except ValueError as error:
+                    # The same thread receives the exact problem; the third rejection stops the run.
+                    if not checkpoint or checkpoint.next_input({'feedback': str(error)}, rejected=True) >= 3:
+                        raise
             session.record('master_codebook_search', 'master_to_codebook_reconciler', searches)
         hits = {item['variable_name']: {row['variable_name'] for query in item['candidates'] for row in query['rows']}
                 for item in searches}
@@ -136,36 +137,41 @@ def reconcile_master_names(session, master, matched, unmatched, entries, taxonom
                     'search_results': [item for item in searches if item['variable_name'] in hit_names]}
         if checkpoint and saved_input.get('stage') != 'reconcile':
             checkpoint.next_input(decision)
-        reply = agent_turn(session, 'master_to_codebook_reconciler', MASTER_TO_CODEBOOK_PROMPT, history,
-                           decision, MasterCodebookUpdateReply, counter,
-                           allow_user_questions=False, checkpoint=checkpoint)
-        updates, reasons = {}, {}
-        candidate_taxonomy, batteries = deepcopy(taxonomy), known_batteries(matched)
-        try:
-            for update in reply['updates']:
-                row = deepcopy(update['row'])
-                name, sources, reason = row['variable_name'], update['source_variables'], update['reason'].strip()
-                if name not in hit_names or name in updates:
-                    raise ValueError('Soft-match updates must name distinct current targets with search hits.')
-                if not sources or len(sources) != len(set(sources)) or not set(sources) <= hits[name]:
-                    raise ValueError('A soft match must cite rows returned by that variable’s own searches.')
-                if not 0 < len(reason.split()) < 30:
-                    raise ValueError('Explain each accepted soft match in fewer than 30 words.')
-                if row['conflicts'] or not row['variable_label'].strip() or not row['variable_description'].strip():
-                    raise ValueError('A soft match needs a useful definition with no unresolved conflict.')
-                if (name in row['battery_members'] or len(set(row['battery_members'])) != len(row['battery_members'])
-                        or not set(row['battery_members']) <= set(matched)):
-                    raise ValueError('Battery peers must be distinct other master-data variables.')
-                if row['battery_root'] in batteries:
-                    row.update({key: batteries[row['battery_root']][key] for key in ('battery_title', 'theme', 'subtheme')})
-                add_theme(candidate_taxonomy, row)
-                row['categories'] = row['categories'].strip() or 'not in source'
-                updates[name] = row
-                reasons[name] = (sources, reason)
-        except ValueError as error:
-            if checkpoint:
-                checkpoint.next_input({'feedback': str(error)})
-            raise
+        batteries = known_batteries(matched)
+        while True:
+            reply = agent_turn(session, 'master_to_codebook_reconciler', MASTER_TO_CODEBOOK_PROMPT, history,
+                               decision, MasterCodebookUpdateReply, counter,
+                               allow_user_questions=False, checkpoint=checkpoint)
+            updates, reasons = {}, {}
+            candidate_taxonomy = deepcopy(taxonomy)
+            try:
+                for update in reply['updates']:
+                    row = deepcopy(update['row'])
+                    name, sources, reason = row['variable_name'], update['source_variables'], update['reason'].strip()
+                    if name not in hit_names or name in updates:
+                        raise ValueError(f'{name}: soft-match updates must name distinct current targets with search hits.')
+                    if not sources or len(sources) != len(set(sources)) or not set(sources) <= hits[name]:
+                        raise ValueError(f'{name}: a soft match must cite rows returned by that variable’s own searches.')
+                    if not 0 < len(reason.split()) < 30:
+                        raise ValueError(f'{name}: explain each accepted soft match in fewer than 30 words.')
+                    if row['conflicts'] or not row['variable_label'].strip() or not row['variable_description'].strip():
+                        raise ValueError(f'{name}: a soft match needs a useful definition with no unresolved conflict.')
+                    members = row['battery_members']
+                    unknown = sorted(set(members) - set(matched))
+                    if name in members or len(set(members)) != len(members) or unknown:
+                        raise ValueError(f'{name}: battery peers must be distinct other master-data variables'
+                                         + (f'; not master variables: {", ".join(unknown)}' if unknown else '') + '.')
+                    if row['battery_root'] in batteries:
+                        row.update({key: batteries[row['battery_root']][key] for key in ('battery_title', 'theme', 'subtheme')})
+                    add_theme(candidate_taxonomy, row)
+                    row['categories'] = row['categories'].strip() or 'not in source'
+                    updates[name] = row
+                    reasons[name] = (sources, reason)
+                break
+            except ValueError as error:
+                # The same thread receives the exact problem; the third rejection stops the run.
+                if not checkpoint or checkpoint.next_input({'feedback': str(error)}, rejected=True) >= 3:
+                    raise
         # Align proposed battery fields using the full roster, but only replace returned targets.
         aligned = {**deepcopy(matched), **updates}
         align_batteries(aligned)

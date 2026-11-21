@@ -134,8 +134,9 @@ class LoaderRunner:
                 if response['status'] != 'completed':
                     raise ValueError('Incomplete response')
                 reply = LoaderReply.model_validate_json(response['output_text']).model_dump()
-            except ValueError:
-                self.advance({'instruction': 'Your last response was incomplete or invalid and no code was executed. Return a smaller complete response.'})
+            except ValueError as error:
+                self.advance({'instruction': f'Your last response was incomplete or invalid and no code was executed: {str(error)[:1000]}. '
+                                             'Return a smaller complete response.'})
                 return
             loader.update(reply=reply, loader_returned=True)
             self.save('loader_reply')

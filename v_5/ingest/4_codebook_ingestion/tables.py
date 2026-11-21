@@ -34,8 +34,16 @@ def normalize_rows(rows):
     for col in COLUMNS:
         frame[col] = frame[col].astype(str).replace('', 'not in source')
     frame['variable_name'] = frame['variable_name'].str.lower()
-    if frame.variable_name.isin(['', 'not in source']).any() or frame.variable_name.duplicated().any():
-        raise ValueError('Codebook variable names must be nonblank and unique after lowercasing.')
+    blank = [str(index + 1) for index in frame.index[frame.variable_name.isin(['', 'not in source'])]]
+    counts = frame.variable_name.value_counts()
+    repeated = counts[(counts > 1) & ~counts.index.isin(['', 'not in source'])]
+    if blank or len(repeated):
+        # The exact names let a rejected agent correct its reply.
+        problems = ([f"rows {', '.join(blank)} have no variable_name"] if blank else []) + (
+            ['these names appear more than once: ' + ', '.join(f'{name} ({count} rows)' for name, count in repeated.items())]
+            if len(repeated) else [])
+        raise ValueError('Codebook variable names must be nonblank and unique after lowercasing; '
+                         + '; '.join(problems) + ". Return one row per variable, combining a repeated variable's details in its row.")
     frame['source_presence'] = 'in source'
     return frame
 
@@ -46,8 +54,10 @@ def create_master(workspace, prepared):
     Inputs: workspace: work root; prepared: loader report with manifest_path.
     Returns: DataFrame of MASTER_FIELDS: variable name, missing percentage, type, original
         name and table names.
-    Details: Phase 4 reads Parquet batches, not source codebook claims. Shared variables
-        across table parts keep one roster row and accumulate their locations.
+    Details: Phase 4 reads Parquet batches, not source codebook claims. Variables are named
+        by their prepared column, so repeated source items such as DHS BIDX (bidx_01 to bidx_20)
+        stay distinct; exact-name and soft matching link them to source definitions. Shared
+        variables across table parts keep one roster row and accumulate their locations.
     """
     manifest = json.loads(work_path(workspace, prepared['manifest_path']).read_text(encoding='utf-8'))
     rows = {}
@@ -65,7 +75,7 @@ def create_master(workspace, prepared):
         for column, missing_count in missing_counts.items():
             metadata = mappings.get(column, {})
             original = metadata.get('original_name') or column
-            name = original.lower()
+            name = column.lower()
             if name in seen or (name in rows and rows[name]['original_variable_name'] != original):
                 raise ValueError(f'Variable names collide after lowercasing: {original}.')
             seen.add(name)

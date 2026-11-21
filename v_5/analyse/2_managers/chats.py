@@ -79,15 +79,16 @@ def display_message(message):
     """Keep the user-visible part of a message for SQL archival.
 
     Inputs: message: full local chat message.
-    Returns: psycopg Json wrapper with display fields and tables/method/precision/analysis
-        details.
-    Details: archive_chat uses this smaller payload; full execution evidence remains in
-        local run logs and transcripts.
+    Returns: A psycopg Json wrapper with display text, result tables, method,
+        precision, issued table IDs and any visualization reference.
+    Details: A visualization reference links the publication turn to its source.
+        The chart file in the local chat archive contains the Python and view options.
     """
     fields = ('id', 'agent', 'text', 'kind', 'time', 'turn_id')
     saved = {key: message[key] for key in fields if key in message}
     details = message.get('details') or {}
-    saved['details'] = {key: details[key] for key in ('tables', 'method', 'decimal_places', 'ran_analysis') if key in details}
+    saved['details'] = {key: details[key] for key in ('tables', 'table_id', 'table_assets', 'visualization', 'method',
+                                                      'decimal_places', 'ran_analysis') if key in details}
     return Json(saved)
 
 
@@ -142,7 +143,7 @@ def archive_chat(project_id, chat_id, state, *, register=False):
                               ON CONFLICT (chat_id) DO NOTHING''', (chat_id, project_id))
         cursor.execute('''UPDATE public.atlas_chats SET title = %s, checkpoint = %s, updated_at = now()
                           WHERE project_id = %s AND chat_id = %s''',
-                       (chat_title(state), Json({key: state[key] for key in ('weights', 'analysis_context') if key in state}),
+                       (chat_title(state), Json({key: state[key] for key in ('weights', 'analysis_context', 'visualization_agent') if key in state}),
                         project_id, chat_id))
         if not cursor.rowcount:
             raise ValueError('This chat no longer exists.')

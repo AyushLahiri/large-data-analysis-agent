@@ -2,10 +2,10 @@ import json
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from v_5.ingest.initial_ingestion.sub_agents.agent import (
-    DATA_AGENT_PROMPT, DELIMITED_PROMPT, FILE_AGENT_PROMPT, FileReply, LAYOUT_PROMPT, MAP_PROMPT,
-    PDF_PROMPT, TABLE_PROMPT, TEXT_PROMPT,
+    DATA_AGENT_PROMPT, FILE_AGENT_PROMPT, FileReply, LAYOUT_PROMPT, MAP_PROMPT, PDF_PROMPT, TABLE_PROMPT,
+    TEXT_PROMPT,
 )
-from v_5.ingest.readers import read_delimited, read_layout, read_pdf, read_table, read_text
+from v_5.ingest.readers import read_layout, read_pdf, read_table, read_text
 
 
 def create_file_reviewers(session, project, folders, files, folder_notes, user_clarifications):
@@ -16,28 +16,26 @@ def create_file_reviewers(session, project, folders, files, folder_notes, user_c
     Inputs: session: model/logging methods; project/folders/files: upload context;
         folder_notes/user_clarifications: live decisions and answers.
     Returns: (inspect_files, follow_up, previews, findings): two callbacks and two
-        dictionaries they fill by file ID. Findings include parser_rules; the loader later
-        receives both dictionaries unchanged.
+        dictionaries they fill by file ID.
     Flow: Groups primary/continuation files by their assigned agent, gives supporting assets
-        their own conversation, and runs independent groups in parallel. CSV/TSV files are
-        read as raw lines; Excel previews its first 6 sheets.
+        their own conversation, and runs independent groups in parallel.
     """
     ask_agent, show = session.ask_agent, session.show
     format_prompts = {"pdf": PDF_PROMPT, "txt": TEXT_PROMPT, "md": TEXT_PROMPT, "map": MAP_PROMPT,
         "dcf": LAYOUT_PROMPT, "dct": LAYOUT_PROMPT, "dat": TEXT_PROMPT,
-        "csv": DELIMITED_PROMPT, "tsv": DELIMITED_PROMPT, "excel": TABLE_PROMPT,
+        "csv": TABLE_PROMPT, "tsv": TABLE_PROMPT, "excel": TABLE_PROMPT,
         "spss": TABLE_PROMPT, "dta": TABLE_PROMPT}
     readers = {"pdf": read_pdf, "txt": read_text, "md": read_text, "map": read_text,
         "dat": read_text, "dcf": read_layout, "dct": read_layout,
-        "csv": read_delimited, "tsv": read_delimited, "excel": read_table,
+        "csv": read_table, "tsv": read_table, "excel": read_table,
         "spss": read_table, "dta": read_table}
     # Explicit parameters make every executed read easy to inspect.
     read_parameters = {
         "read_text": {"first": 30, "random_count": 30, "encoding": "utf-8-sig"},
         "read_layout": {"first": 30, "random_count": 30, "encoding": "utf-8-sig"},
-        "read_delimited": {"first": 10, "random_count": 10, "max_chars": 2000, "encoding": "utf-8-sig"},
         "read_pdf": {"first": 3, "random_count": 5},
-        "read_table": {"first": 10, "random_count": 10, "rows": 5, "sheets": 6},
+        "read_table": {"first": 10, "random_count": 10, "rows": 5,
+                       "delimiter": ",", "encoding": "utf-8-sig", "sheet": 0},
     }
     threads = defaultdict(list)
     previews, readings, findings = {}, {}, {}
@@ -85,6 +83,8 @@ def create_file_reviewers(session, project, folders, files, folder_notes, user_c
             label = f"{agent} - {file['filename']} ({file_id})"
             reader = readers[file["format"]]
             parameters = dict(read_parameters[reader.__name__])
+            if file["format"] == "tsv":
+                parameters["delimiter"] = "\t"
             preview = reader(file["path"], **parameters)
             previews[file_id] = preview
             readings[file_id] = {

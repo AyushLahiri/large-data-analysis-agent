@@ -62,6 +62,12 @@ def run():
         published = []
 
         class Session:
+            def begin_phase(self, *args):
+                """Ignore chat phase timing in this test."""
+
+            def close_phase(self):
+                """Ignore chat phase timing in this test."""
+
             def __init__(self):
                 """Prepare the scripted loader session and its saved handoff.
 

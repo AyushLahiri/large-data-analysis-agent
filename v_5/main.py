@@ -264,6 +264,7 @@ def create_app(runtime=RUNTIME):
                 session.message('app', str(error))
                 session.state['status'] = 'stopped' if session.cancelled.is_set() else 'failed'
             finally:
+                session.close_phase()
                 session.save()
                 with lock:
                     sessions.pop(project_id, None)

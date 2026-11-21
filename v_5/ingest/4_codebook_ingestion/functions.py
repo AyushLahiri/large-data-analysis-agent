@@ -35,6 +35,7 @@ def ingest_codebooks(session, context, prepared, files, workspace, environment):
             and all(Path(previous[key]).is_file() for key in ('master', 'combined', 'unmatched', 'source_mapping'))
             and all(Path(source['table']).is_file() for source in previous['source_tables'].values())):
         return previous
+    session.begin_phase('Codebook tables', context['folder'])
     books[context['folder']] = {**previous, 'merged_with_master': False}
     session.record('codebook_assembly_started', 'codebook_agent', {'folder': context['folder']})
     master = create_master(workspace, prepared)
@@ -83,6 +84,7 @@ def complete_codebooks(session, context, prepared, files, workspace, environment
     session.save()
     book = ingest_codebooks(session, context, prepared, files, workspace, environment)
     finalize_codebook(session, context, prepared, workspace, book)
+    session.close_phase()  # Atlas publication is not part of the codebook phases.
     # Keep the original release when a new app run resumes this saved workspace.
     publish_atlas(session, {'release': workspace.parent.parent.name, 'next_folder': next_folder,
         'datasets': [{'folder': context['folder'], 'workspace': str(workspace),

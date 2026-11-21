@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>V5 · Data workspace</title><link rel="icon" href="/static/favicon.svg" type="image/svg+xml"><link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/charts.css">
 </head>
 <body>
 <header class="topbar">
@@ -20,10 +21,11 @@
   </div>
   <div id="ingest-workspace" class="workspace">
     <section class="chat-panel panel" aria-labelledby="chat-title">
-      <div class="panel-heading"><div><span class="eyebrow">WORK TOGETHER</span><h2 id="chat-title">Conversation</h2></div><button id="stop" type="button" aria-label="Stop ingestion" title="Stop ingestion" hidden></button></div>
+      <div class="panel-heading"><div><span class="eyebrow">WORK TOGETHER</span><h2 id="chat-title">Conversation</h2></div></div>
       <div id="chat" class="chat-stream" aria-live="polite" aria-relevant="additions"></div>
       <div id="live-thinking" class="live-thinking" hidden><span class="thinking-orb"></span><span>Thinking</span><span class="dots" aria-label="Working"><i></i><i></i><i></i></span><span id="activity">Reviewing your materials</span></div>
       <div class="composer">
+        <div class="run-actions"><button id="stop" type="button" aria-label="Stop ingestion" title="Stop ingestion" hidden></button><button id="retry-ingestion" class="secondary" type="button" hidden>Retry ingestion</button><p id="retry-reason" class="muted small" role="status" hidden></p></div>
         <div id="question-form"></div>
         <p id="pending" class="muted"></p>
         <label class="sr-only" for="reply">Your reply</label><textarea id="reply" rows="1" placeholder="Your answer…" disabled></textarea>
@@ -39,7 +41,7 @@
         <button id="dataset" class="upload-slot" disabled><span>＋</span> Add new data and related materials</button>
         <div id="atlas-result" class="atlas-result" hidden></div>
       </div>
-      <div class="materials-footer"><div class="before-ingestion"><label for="before-note">Anything specific before we begin? <span class="muted">(optional)</span></label><textarea id="before-note" rows="2" placeholder="Anomalies, special handling or things to look out for. For example: −99 means missing, or preserve leading zeros."></textarea></div><span id="save-state" class="muted small">Your files stay on this computer.</span><div class="actions"><button id="save" class="secondary" disabled>Save notes</button><button id="ingest" class="primary" disabled>Ingest materials →</button><button id="retry-ingestion" class="secondary" type="button" hidden>Retry ingestion</button><button id="publish" class="secondary" type="button" hidden>Publish to Atlas</button></div><p id="retry-reason" class="muted small" role="status" hidden></p><p id="ingest-error" class="error" role="alert"></p></div>
+      <div class="materials-footer"><div class="before-ingestion"><label for="before-note">Anything specific before we begin? <span class="muted">(optional)</span></label><textarea id="before-note" rows="2" placeholder="Anomalies, special handling or things to look out for. For example: −99 means missing, or preserve leading zeros."></textarea></div><span id="save-state" class="muted small">Your files stay on this computer.</span><div class="actions"><button id="save" class="secondary" disabled>Save notes</button><button id="ingest" class="primary" disabled>Ingest materials →</button><button id="publish" class="secondary" type="button" hidden>Publish to Atlas</button></div><p id="ingest-error" class="error" role="alert"></p></div>
     </section>
   </div>
   <div id="analyse-workspace" class="workspace analyse-workspace" hidden>
@@ -120,6 +122,8 @@
   <div class="dialog-actions"><button id="add-ingestion-details" type="button" class="secondary">Add ingestion details</button><button id="continue-ingestion" type="button" class="primary">Continue to ingestion</button></div>
 </dialog>
 <script src="/static/vendor/markdown-it-15.0.3.min.js"></script>
+<script src="/static/dom.js"></script>
 <script src="/static/app.js"></script>
+<script src="/static/charts.js"></script>
 <script src="/static/analysis.js"></script>
 </body></html>

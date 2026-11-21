@@ -32,7 +32,8 @@ def roster(names):
 
 def session():
     """Provide only the logging boundaries used by these isolated finalizer checks."""
-    return SimpleNamespace(state={}, message=lambda *args: None, record=lambda *args: None)
+    return SimpleNamespace(state={}, message=lambda *args: None, record=lambda *args: None,
+                           begin_phase=lambda *args: None, close_phase=lambda: None)
 
 
 def fixture():

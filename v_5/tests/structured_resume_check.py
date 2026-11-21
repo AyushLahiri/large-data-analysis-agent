@@ -144,7 +144,7 @@ def recovery_faults(root):
         assert counts == (len(api.requests), len(api.executions)), 'Completed source reran'
         assert read_json(first.path)['complete']
         assert not list(first.root.rglob('*conversation*.json'))
-        assert all(request['model'] == 'gpt-6.1-sol' and request['reasoning']['effort'] == 'medium'
+        assert all(request['model'] == 'gpt-6.2-sol' and request['reasoning']['effort'] == 'medium'
                    for _, request in api.requests)
     print(f'PASS {len(points)} extraction interruption/retry boundaries')
 

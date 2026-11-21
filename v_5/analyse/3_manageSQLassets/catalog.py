@@ -13,8 +13,8 @@ from v_5.main_functions.sql import (
 
 VARIABLE_FIELDS = (
     'variable_name', 'column_name', 'variable_label', 'variable_description', 'variable_type',
-    'pct_missing', 'theme', 'subtheme', 'categories', 'other_information',
-    'battery_members', 'battery_summary', 'table_name', 'table_names',
+    'theme', 'subtheme', 'categories', 'battery_members', 'battery_summary', 'table_name', 'table_names',
+    'other_information',
 )
 
 
@@ -65,8 +65,8 @@ def candidate_rows(rows):
     """Condense codebook matches into a small candidate list.
 
     Inputs: rows: ranked codebook records, including optional battery membership.
-    Returns: At most ten candidate dicts with short category previews, missingness, source
-        notes and grouped battery descriptions.
+    Returns: At most ten candidate dicts with short category previews and grouped battery
+        descriptions.
     Details: VariableSearch uses the first thirty hits, coalesces members of the same
         battery and retains locations needed for later exact selection.
     """
@@ -80,32 +80,15 @@ def candidate_rows(rows):
         if key in seen:
             continue
         seen.add(key)
-        out = {key: row.get(key) for key in VARIABLE_FIELDS if key not in {'battery_members', 'battery_summary'}}
+        # Search candidates stay short; other_information arrives with exact lookup and battery expansion.
+        out = {key: row.get(key) for key in VARIABLE_FIELDS if key not in {'battery_members', 'battery_summary', 'other_information'}}
         out['categories'] = category_preview(out['categories'])
-        if (out['other_information'] or '').strip().casefold() == 'not in source':
-            out['other_information'] = ''
         if members:
             out['battery_members'] = members
             out['variable_description'] = row.get('battery_summary') or out['variable_description']
         candidates.append(out)
     top_15 = candidates[:15]
     return top_15[:10]
-
-
-def category_labels(text):
-    """Parse documented code-to-label pairs.
-
-    Inputs: text: category lines using colon, equals or spaced dash separators.
-    Returns: Mapping from code strings to label strings.
-    Details: Used by label_tables to replace result codes only when the available mappings
-        agree.
-    """
-    labels = {}
-    for line in re.split(r'\n|<br\s*/?>', text or '', flags=re.I):
-        parts = re.split(r'\s+[-–—]\s+|\s*[:=]\s*', line.strip(), maxsplit=1)
-        if len(parts) == 2 and all(parts):
-            labels[parts[0]] = parts[1]
-    return labels
 
 
 def codebook_themes(cursor, schema, dataset_ids):
@@ -287,7 +270,8 @@ class AtlasCatalog:
 
         Inputs: folder: dataset; condition/suffix: trusted SQL fragments; parameters: bound
             values; vector: extension access flag.
-        Returns: List of VARIABLE_FIELDS dicts, or empty when no codebook exists.
+        Returns: List of VARIABLE_FIELDS dicts, or empty when no codebook exists. Blank or
+            not-in-source other_information is left out.
         Details: Shared by exact lookup, semantic search and reviewer evidence. Always
             constrains dataset_id and updates the per-column cache.
         """
@@ -300,6 +284,9 @@ class AtlasCatalog:
         with read_atlas(vector=vector, session=self.session) as (connection, _), connection.cursor(cursor_factory=RealDictCursor) as cursor:
             cursor.execute(statement, (data['dataset_id'], *parameters))
             rows = [dict(row) for row in cursor.fetchall()]
+        for row in rows:
+            if (row.get('other_information') or '').strip().casefold() in {'', 'not in source'}:
+                row.pop('other_information', None)
         self._codebook_by_column[folder].update((row['column_name'], row) for row in rows if row['column_name'])
         return rows
 
@@ -356,40 +343,6 @@ class AtlasCatalog:
         names = list(dict.fromkeys(name for table in self.folders[folder]['tables'] for name in self.columns[table['name']]))
         return Random(17).sample(names, min(15, len(names)))
 
-    def label_tables(self, tables, folders):
-        """Replace categorical result codes with unambiguous labels.
-
-        Inputs: tables: mutable columns/rows result dicts; folders: datasets used by the
-            calculation.
-        Returns: None; updates table cells in place where a matching label exists.
-        Details: Runs before the final analyst handoff. Matches headers to documented variables
-            and only applies mappings that agree across sources.
-        """
-        headers = list({header.strip().casefold() for table in tables for header in table['columns']})
-        if not headers:
-            return
-        mappings = defaultdict(list)
-        for folder in folders:
-            rows = self.codebook(folder, sql.SQL('variable_name=ANY(%s) OR lower(column_name)=ANY(%s) OR lower(variable_label)=ANY(%s)'),
-                                 (headers, headers, headers))
-            for row in rows:
-                labels = category_labels(row['categories'])
-                if labels:
-                    for key in ('variable_name', 'column_name', 'variable_label'):
-                        if row[key]:
-                            mappings[row[key].strip().casefold()].append(labels)
-        for table in tables:
-            for index, header in enumerate(table['columns']):
-                choices = mappings[header.strip().casefold()]
-                # A shared header may match several datasets; do not relabel codes when their definitions disagree.
-                if choices and all(choice == choices[0] for choice in choices):
-                    for row in table['rows']:
-                        value = row[index]
-                        code = str(value)
-                        if isinstance(value, float) and value.is_integer():
-                            code = str(int(value))
-                        row[index] = choices[0].get(code, value)
-
 
 class VariableSearch:
     def __init__(self, catalog, session):
@@ -409,7 +362,8 @@ class VariableSearch:
         """Expand grouped battery candidates into their individual definitions.
 
         Inputs: folder: one scoped key or blank; groups: lists of member variable names.
-        Returns: List of folder/battery_members/variables bundles.
+        Returns: List of folder/battery_members/variables bundles, with other_information at
+            bundle level when every member shares it.
         Details: Used after exact or grouped discovery. Queries full definitions rather than
             reusing the condensed battery summary.
         """
@@ -424,9 +378,16 @@ class VariableSearch:
             by_name = {row['variable_name']: {field: value for field, value in row.items()
                        if field not in {'battery_members', 'battery_summary'}} for row in rows}
             for members in groups:
-                variables = [by_name[name] for name in members if name in by_name]
+                variables = [dict(by_name[name]) for name in members if name in by_name]
                 if variables:
-                    results.append({'folder': key, 'battery_members': members, 'variables': variables})
+                    bundle = {'folder': key, 'battery_members': members, 'variables': variables}
+                    notes = {variable.get('other_information') for variable in variables}
+                    # Members usually share one methodological note; send it once for the battery.
+                    if len(notes) == 1 and None not in notes:
+                        bundle['other_information'] = notes.pop()
+                        for variable in variables:
+                            del variable['other_information']
+                    results.append(bundle)
         return results
 
     def get_subthemes(self, selections):

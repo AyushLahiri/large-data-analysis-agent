@@ -82,7 +82,7 @@ Program result and decision output
   because both concern saving. A root listing alone is insufficient evidence.
 - Follow the reconciliation, labels, notes, categories, battery and taxonomy rules above.
   Reuse the current taxonomy and known_batteries, including their exact root/title/grouping.
-  Battery members must be real master variable names; do not use a source-only root as a
+  Battery members must be real master variable names from target_rows or known_batteries; do not use a source-only root as a
   data member. Similar prefixes alone do not justify a battery. Do not invent an item's
   meaning. Keep item labels distinct when the source explains their differences.
 - Return all editable fields for accepted targets. other_information_override should
@@ -148,9 +148,6 @@ CODEBOOK_TABLE_PROMPT = """
   Markdown file, and a concise verification report. No dataset statistics or analysis.
 - You receive its filename/path, project and ingestion context, loader handoff and
   installed packages. Inspect the source structure before choosing a reading strategy.
-- source_file.finding.parser_rules and source_file.ingestion_preview are the ingestion
-  reviewer's reading advice and the small preview it saw. Use them as leads in Phase 1
-  and confirm them with code; they are not verified facts.
 - Inventory every Excel sheet, including notes and hidden sheets. Examine shapes,
   headers and small samples, then programmatically read all relevant definitions.
 - Preserve documented battery membership, eligibility and skip rules, and recode

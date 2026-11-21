@@ -25,3 +25,8 @@ class PdfCalls(ConversationCalls):
         if usage:
             observations.insert(0, f"Input tokens: {usage['input_tokens']:,}; output tokens: {usage['output_tokens']:,} (includes reasoning).")
         self.session.message(name, message, 'thinking', {'observations': observations})
+
+    def rejected(self, name, problem, attempt):
+        """Show that a reply was rejected and is being asked again with its problem."""
+        self.session.message(name, f'Reply rejected; asking again (correction {attempt}).', 'thinking',
+                             {'observations': [problem]})

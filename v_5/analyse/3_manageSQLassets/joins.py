@@ -6,7 +6,7 @@ from v_5.analyse.sql_assets.catalog import read_atlas
 from v_5.main_functions.sql import atlas_transaction
 
 
-JOIN_SKILL = 'cross_folder_joins'
+JOIN_SKILL = 'general/cross_folder_joins'
 
 
 ID_NAMES = re.compile(

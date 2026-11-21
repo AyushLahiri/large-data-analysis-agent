@@ -162,7 +162,7 @@ def kill_case(root, point, unit):
     assert pd.read_parquet(runner.workspace / 'toy.parquet')['id'].tolist() == [1, 2, 3]
     for call in server['requests']:
         request = call['request']
-        assert request['model'] == 'gpt-6.1-sol' and request['reasoning']['effort'] == 'medium'
+        assert request['model'] == 'gpt-6.2-sol' and request['reasoning']['effort'] == 'medium'
         assert request['max_output_tokens'] == 8000
 
 

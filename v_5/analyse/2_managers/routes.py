@@ -5,7 +5,6 @@ import shutil
 import threading
 import traceback
 from contextlib import nullcontext
-from datetime import datetime, timezone
 from flask import jsonify, request
 from pathlib import Path
 from uuid import uuid4
@@ -16,62 +15,13 @@ from v_5.analyse.managers.chats import (
     archive_chat, chat_title, create_chat, delete_chat, list_chats, restore_chat, save_turn_feedback,
 )
 from v_5.analyse.managers.turns import complete_turn, initialize_turns, new_turn, write_transcript
+from v_5.analyse.managers.tables import save_tables, selected_table
 from v_5.analyse.sql_assets.catalog import AtlasCatalog
 from v_5.main_functions.session import Session, write_json
 from v_5.main_functions.sql import published_folders
 
 
-SCOPE_FILE = 'analysis_scope.json'
-
-
-def scope_tree(project, folder):
-    """List the project's published folders and mark the ones in the selected scope.
-
-    Inputs: project: project state with atlas.data; folder: selected key, blank for all.
-    Returns: Folder records with display name, physical tables and a selected flag.
-    Details: Mirrors the analysis scope picker, which offers the entire project or one folder.
-    """
-    groups = {}
-    for table in project.get('atlas', {}).get('data', []):
-        key = table['folder']
-        label = (project.get('folders', {}).get(key) or {}).get('display_name') or table.get('dataset_name') or key
-        groups.setdefault(key, {'folder': key, 'name': label, 'tables': []})['tables'].append(table['name'])
-    return [{**item, 'selected': not folder or item['folder'] == folder} for item in groups.values()]
-
-
-def update_scope(path, project, chat_id, state, folder):
-    """Save a chat's folder selection and report whether it changed since the last question.
-
-    Inputs: path: project directory; project: published state; chat_id: key; state: chat
-        state; folder: selected key or blank for the entire project.
-    Returns: None when unchanged, otherwise a dict with the agents' note and the UI tree.
-    Details: One project-level file, analysis_scope.json, holds the latest selection per chat
-        and is overwritten on each change. A chat without a saved entry compares against its
-        last question's folder, or the entire project when it has none.
-    """
-    tree = scope_tree(project, folder)
-    selected = sorted(item['folder'] for item in tree if item['selected'])
-    target = path / SCOPE_FILE
-    saved = json.loads(target.read_text(encoding='utf-8')) if target.is_file() else {}
-    chats = saved.get('chats', {})
-    previous = chats.get(chat_id, {}).get('selected')
-    if previous is None:
-        asked = [turn for turn in state['turns'] if turn.get('question_id')]
-        last = asked[-1]['folder'] if asked else None
-        previous = sorted(item['folder'] for item in tree if not last or item['folder'] == last)
-    if previous == selected and chat_id in chats:
-        return None
-    chats[chat_id] = {'selection': folder or 'entire_project', 'selected': selected, 'tree': tree,
-                      'updated': datetime.now(timezone.utc).isoformat()}
-    write_json(target, {'project_id': project['id'], 'chats': chats})
-    if previous == selected:
-        return None
-    names = {item['folder']: item['name'] for item in tree}
-    return {
-        'agents': {'now_in_scope': [{'folder': key, 'name': names[key]} for key in selected],
-                   'previously_in_scope': [{'folder': key, 'name': names.get(key, key)} for key in previous]},
-        'details': {'project_name': project.get('context', {}).get('name') or '', 'tree': tree},
-    }
+ANSWER_AGENTS = {'analysis_orchestrator', 'formatter', 'analysis_agent', 'visualizer'}
 
 
 def register_analysis(app, read_project, lock, analysis_jobs):
@@ -130,11 +80,14 @@ def register_analysis(app, read_project, lock, analysis_jobs):
             state = restore_chat(path.name, chat_id)
             if state is None:
                 raise ValueError('This chat no longer exists.')
+            initialize_turns(state)
+            save_tables(archive, chat_id, state, restore=True)
             write_json(target, state)
             return state
         state = json.loads(target.read_text(encoding='utf-8'))
         legacy_chat = 'turns' not in state
-        if initialize_turns(state):
+        migrated = initialize_turns(state)
+        if save_tables(archive, chat_id, state) or migrated:
             if legacy_chat:
                 for turn in state['turns']:
                     if turn['answer_id']:
@@ -158,8 +111,13 @@ def register_analysis(app, read_project, lock, analysis_jobs):
         """
         run = state.get('log_directory')
         log = Path(run) / 'timeline.md' if run else None
-        return {**{key: value for key, value in state.items() if key != 'variables_used'}, 'title': chat_title(state),
-                'log_path': log.relative_to(path).as_posix() if log and log.is_relative_to(path) and log.is_file() else None}
+        visible = {key: value for key, value in state.items() if key != 'variables_used'}
+        if 'analysis_context' in visible:
+            visible['analysis_context'] = {name: {key: value for key, value in budget.items()
+                                                  if key in ('generation', 'used_tokens', 'limit_hit')}
+                                           for name, budget in state['analysis_context'].items()}
+        return {**visible, 'title': chat_title(state), 'log_path':
+                log.relative_to(path).as_posix() if log and log.is_relative_to(path) and log.is_file() else None}
 
     @app.get('/api/projects/<project_id>/analysis/tree')
     def get_analysis_tree(project_id):
@@ -195,8 +153,10 @@ def register_analysis(app, read_project, lock, analysis_jobs):
             for chat_id in ids:
                 target = directory(path, chat_id) / 'session.json'
                 if target.is_file():
-                    state = read_state(path, chat_id, sync=(project_id, chat_id) not in analysis_jobs)
-                    local.append({'id': chat_id, 'title': chat_title(state)})
+                    live = analysis_jobs.get((project_id, chat_id))
+                    with live.lock if live else nullcontext():
+                        state = live.state if live else read_state(path, chat_id, sync=True)
+                        local.append({'id': chat_id, 'title': chat_title(state)})
             try:
                 return jsonify(list_chats(project_id))
             except psycopg2.OperationalError:
@@ -252,11 +212,6 @@ def register_analysis(app, read_project, lock, analysis_jobs):
                 if moved:
                     staged.rename(archive)
                 raise
-            scope_file = path / SCOPE_FILE
-            if scope_file.is_file():
-                saved = json.loads(scope_file.read_text(encoding='utf-8'))
-                if saved.get('chats', {}).pop(chat_id, None) is not None:
-                    write_json(scope_file, saved)
             if staged.exists():
                 try:
                     shutil.rmtree(staged)
@@ -285,6 +240,36 @@ def register_analysis(app, read_project, lock, analysis_jobs):
                         state = {**state, 'status': 'stopping', 'activity': 'Stopping analysis'}
                     return jsonify(visible_state(path, state))
             return jsonify(visible_state(path, read_state(path, chat_id)))
+
+    @app.get('/api/projects/<project_id>/analysis/chats/<chat_id>/visualizations/<turn_id>')
+    def get_visualization(project_id, chat_id, turn_id):
+        """Return a published chart and its original source table for the chat card.
+
+        When: The UI first opens a visualization from a saved message.
+        Inputs: project_id and chat_id identify the archive. turn_id identifies
+            the turn that published this chart.
+        Returns: JSON with table and views, or 404 for an unavailable publication.
+        Flow: Find the message reference in live or saved state, load the local
+            asset and verify its publication turn and source table IDs.
+        """
+        with lock:
+            path, _ = read_project(project_id)
+            archive = directory(path, chat_id)
+            live = analysis_jobs.get((project_id, chat_id))
+            with live.lock if live else nullcontext():
+                state = live.state if live else read_state(path, chat_id)
+                visual = next((visual for msg in state['messages'] if msg.get('turn_id') == turn_id
+                               and (visual := (msg.get('details') or {}).get('visualization'))), None)
+                if not visual or visual.get('turn_id') != turn_id or not re.fullmatch(r'turn_\d+', turn_id):
+                    return jsonify(error='This visualization is unavailable.'), 404
+                table = selected_table(archive, state, visual['table_id'])
+                target = archive / 'visualizations' / (turn_id + '.json')
+                if not target.is_file():
+                    return jsonify(error='The local visualization file is missing. Use Visualize on the source table to recreate it.'), 404
+                asset = json.loads(target.read_text(encoding='utf-8'))
+                if asset['table_id'] != table['table_id'] or asset['turn_id'] != turn_id:
+                    raise ValueError('The visualization does not match this source table.')
+        return jsonify(table=table, views=asset['views'])
 
     @app.post('/api/projects/<project_id>/analysis/chats/<chat_id>/stop')
     def stop_analysis(project_id, chat_id):
@@ -327,7 +312,7 @@ def register_analysis(app, read_project, lock, analysis_jobs):
             with session.lock if session else nullcontext():
                 state = session.state if session else read_state(path, chat_id)
                 turn = next((item for item in state['turns'] if item['id'] == turn_id), None)
-                if not turn or not any(message.get('turn_id') == turn_id and message['agent'] == 'analysis_orchestrator'
+                if not turn or not any(message.get('turn_id') == turn_id and message['agent'] in ANSWER_AGENTS
                                        for message in state['messages']):
                     raise ValueError('This answer is no longer available.')
                 archived = int(turn_id.rsplit('_', 1)[1]) <= state.get('atlas_archived_through', 0)
@@ -347,14 +332,16 @@ def register_analysis(app, read_project, lock, analysis_jobs):
         """Start a chat opening message or a new analysis question.
 
         When: POST .../analysis/chats/<chat_id>.
-        Inputs: Route IDs; JSON text and optional folder scope.
+        Inputs: Route IDs, question text and optional folder scope. A Visualize
+            click supplies table_id. chart_width gives the preview width in CSS pixels.
         Returns: JSON ok/turn_id, or error/409 when another question is running.
-        Flow: Validates published scope and length, creates a Session/turn, records the question
-            and launches the background work closure.
+        Flow: Validate the scope and optional table selection, create the turn,
+            record the question and launch analysis in a background thread.
         """
         body = request.get_json() or {}
         folder = str(body.get('folder') or '')
         text = str(body.get('text') or '').strip()
+        table_id = body.get('table_id')
         if len(text) > 8000:
             raise ValueError('Keep each question under 8,000 characters.')
         with lock:
@@ -365,26 +352,26 @@ def register_analysis(app, read_project, lock, analysis_jobs):
             if not published or (folder and folder not in published):
                 raise ValueError('Choose a published project or folder first.')
             if job in analysis_jobs:
-                if text:
+                if text or table_id is not None:
                     return jsonify(error='The current analysis is still running. Your question is still in the composer.'), 409
                 return jsonify(ok=True)
             state = read_state(path, chat_id)
-            if not text and any(message['agent'] == 'analysis_orchestrator' for message in state['messages']):
+            if table_id is not None:
+                if not isinstance(table_id, str):
+                    raise ValueError('Choose a saved table.')
+                table = selected_table(archive, state, table_id, folder)
+                text = text or f"Visualize table {table['ordinal']} from {table['turn_id']} — {table['title']}."
+            if not text and any(message['agent'] in ANSWER_AGENTS for message in state['messages']):
                 return jsonify(ok=True)
-            change = update_scope(path, project, chat_id, state, folder) if text else None
-            if change:
-                # Shown before the question and kept outside the turn, so it is never taken as an answer.
-                state['messages'].append({'id': uuid4().hex, 'agent': 'analysis', 'text': 'Updated folder scope',
-                                          'kind': 'scope', 'details': change['details'],
-                                          'time': datetime.now(timezone.utc).isoformat()})
             state.update(status='running', activity='Understanding your question')
             turn = new_turn(state['turns'], text, folder) if text else None
-            if turn and change:
-                turn['scope_update'] = change['agents']
             session = Session(path, state, analysis=True, turn_id=turn['id'] if turn else None, analysis_directory=archive)
+            width = body.get('chart_width')
+            if type(width) is int and width > 0:
+                session.chart_width = max(180, min(width, 1920))
             analysis_jobs[job] = session
             if turn:
-                turn['question_id'] = session.message('You', text)
+                turn['question_id'] = session.message('You', text, details={'table_id': table_id} if table_id else None)
                 session.save()
 
             def work():
@@ -398,7 +385,10 @@ def register_analysis(app, read_project, lock, analysis_jobs):
                     appropriate, rolls finished contexts and returns the chat to idle even on failure.
                 """
                 try:
-                    analyse(session, project, folder, text)
+                    if table_id:
+                        analyse(session, project, folder, text, table_id=table_id)
+                    else:
+                        analyse(session, project, folder, text)
                 except Exception as error:
                     if session.cancelled.is_set():
                         session.record('analysis_stopped', 'analysis', {})
@@ -416,16 +406,20 @@ def register_analysis(app, read_project, lock, analysis_jobs):
                 finally:
                     if turn:
                         try:
-                            answered = any(message.get('turn_id') == turn['id'] and message['agent'] == 'analysis_orchestrator'
+                            answered = any(message.get('turn_id') == turn['id'] and message['agent'] in ANSWER_AGENTS
                                            for message in state['messages'])
                             if answered or not session.cancelled.is_set():
                                 complete_turn(session, turn)
                                 rollover_finished_contexts(session)
+                            with session.lock:
+                                save_tables(archive, chat_id, state)
                             write_transcript(path, state, turn, session.run_path, directory=archive)
                             state['transcript_path'] = (archive / 'transcript.txt').relative_to(path).as_posix()
                         except Exception as error:
                             session.record('turn_archive_error', 'analysis', {'error': str(error), 'traceback': traceback.format_exc()})
                     with lock:
+                        if not turn:
+                            save_tables(archive, chat_id, state)
                         state['status'] = 'idle'
                         session.save()
                         try:

@@ -158,7 +158,7 @@ def check_budget_and_expired_response(root):
     try:
         checkpoint.invoke(path, 'page1', 'reader', 'prompt', payload, PdfCodebookReply)
     except RuntimeError as error:
-        assert '250,000-token' in str(error)
+        assert f'{SESSION_BUDGET:,}-token' in str(error)
     else:
         raise AssertionError('Over-budget call was allowed')
     assert not list(provider.root.glob('resp_*.json'))

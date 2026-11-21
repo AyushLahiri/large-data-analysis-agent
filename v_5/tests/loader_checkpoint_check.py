@@ -56,7 +56,7 @@ def verify(root, stopped=False):
         if call['role'] == 'rollover':
             assert request['model'] == 'gpt-6-luna' and request['reasoning']['effort'] == 'high'
         else:
-            assert request['model'] == 'gpt-6.1-sol' and request['reasoning']['effort'] == 'medium'
+            assert request['model'] == 'gpt-6.2-sol' and request['reasoning']['effort'] == 'medium'
             assert request['max_output_tokens'] == OUTPUT_TOKENS
             assert request['text']['format']['name'] == ('LoaderReply' if call['role'] == 'loader' else 'GlitchReply')
     return state, server
@@ -222,6 +222,12 @@ def production_parity(base):
     api = FakeAPI(root / 'server')
 
     class AppSession:
+        def begin_phase(self, *args):
+            """Ignore chat phase timing in this test."""
+
+        def close_phase(self):
+            """Ignore chat phase timing in this test."""
+
         def __init__(self):
             """Supply UI services without starting the app or touching user project state."""
             self.path = root

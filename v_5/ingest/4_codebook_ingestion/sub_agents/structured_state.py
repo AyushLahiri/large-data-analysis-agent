@@ -136,8 +136,9 @@ class StructuredRunner:
             if response['status'] != 'completed':
                 raise ValueError('Incomplete extraction reply')
             reply = CodebookTableReply.model_validate_json(response['output_text']).model_dump()
-        except ValueError:
-            self.advance({'instruction': 'Your last response was incomplete or invalid and no code was executed. Return a smaller complete response.'})
+        except ValueError as error:
+            self.advance({'instruction': f'Your last response was incomplete or invalid and no code was executed: {str(error)[:1000]}. '
+                                         'Return a smaller complete response.'})
             return
         state.update(reply=reply, agent_returned=True)
         self.save('reply')

@@ -117,7 +117,7 @@ def analysis_chat(session, project, folder, text):
             error_feedback(session, language, 'Invalid input', ValueError('Example execution error'))
         raise AssertionError('The fifth error did not stop the analysis.')
     if text == 'Show the average to four decimal places.':
-        session.message('analysis_orchestrator', 'Here is the average.', details={
+        session.message('formatter', 'Here is the average.', details={
             'tables': [{'title': 'Average usage', 'columns': ['Average', 'Valid records', 'Weighted total'],
                         'rows': [[5.123456, 59, 12], [6.0, 60, 25]], 'unweighted_sample_columns': ['Valid records']}],
             'decimal_places': 4, 'ran_analysis': True,

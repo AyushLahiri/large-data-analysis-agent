@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest.mock import patch
+from uuid import uuid4
 
 from v_5.ingest.initial_ingestion.agent import IngestionReply
 from v_5.ingest.initial_ingestion.sub_agents.agent import ContextReply, FileReply
@@ -48,7 +49,7 @@ def check_initial_ingestion(root):
         delegation with fake model replies.
     """
     uploads = root / 'uploads'
-    uploads.mkdir()
+    uploads.mkdir(parents=True)
     files = {}
     for file_id, role, agent, folder in [
         ('first', 'primary', 'data_files', 'Survey'),
@@ -60,7 +61,7 @@ def check_initial_ingestion(root):
         path.write_text('id,value\n1,2\n2,3\n', encoding='utf-8')
         files[file_id] = dict(file_id=file_id, filename=path.name, path=str(path), format='csv',
                               folder=folder, role=role, agent=agent, ignore=False, note='Uploaded context')
-    state = dict(context={'name': 'Boundary check'}, folders={'Survey': {}, 'Locked': {}},
+    state = dict(id=root.name, context={'name': 'Boundary check'}, folders={'Survey': {}, 'Locked': {}},
                  files=files, messages=[], atlas={'data': [{'folder': 'Locked'}]},
                  folder_notes={'Locked': {'summary': 'Existing publication'}},
                  findings={'published': {'summary': 'Previously reviewed'}})
@@ -162,7 +163,7 @@ def run():
     """
     check_packages()
     with TemporaryDirectory() as directory:
-        check_initial_ingestion(Path(directory))
+        check_initial_ingestion(Path(directory) / 'projects' / uuid4().hex)
     print('PASS: numbered packages, shared contracts, skill paths, file-review conversations, current follow-up context, protected folders, saved/reused handoffs and phase state. No paid calls.')
 
 

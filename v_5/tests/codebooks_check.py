@@ -85,6 +85,12 @@ def run():
         else: raise AssertionError('Case collision was silently accepted')
 
         class Session:
+            def begin_phase(self, *args):
+                """Ignore chat phase timing in this test."""
+
+            def close_phase(self):
+                """Ignore chat phase timing in this test."""
+
             def __init__(self):
                 """Initialize the codebook test's minimal session recorder.
 
@@ -217,7 +223,11 @@ def run():
                 return self.responses[response_id]
             def progress(self, *args):
                 pass
-        with patch('v_5.ingest.codebook_ingestion.sub_agents.pdf.read_pdf',return_value=pages):
+            def rejected(self, *args):
+                pass
+        # The fixture's repeated variables sit on pages 1 and 11, so it keeps two 10-page blocks.
+        with patch('v_5.ingest.codebook_ingestion.sub_agents.pdf.read_pdf',return_value=pages), \
+             patch('v_5.ingest.codebook_ingestion.sub_agents.pdf.PDF_BLOCK_SIZE', 10):
             table=pdf_codebook(session,{'filename':'book.pdf','path':'unused'},directory, provider=PdfTransport())
         assert set(table.variable_name) == {'id', 'new', 'later', 'same', *related}
         by_name = table.set_index('variable_name')
@@ -246,10 +256,10 @@ def run():
         assert session.calls[0]['model']=='gpt-6-luna'
         assert session.calls[0]['reasoning']=={'effort':'high'}
         assert session.messages[-1][2]=='thinking' and 'Page 3' in session.messages[-1][1]
-        for model in (None, 'gpt-6.1-sol'):
+        for model in (None, 'gpt-6.2-sol'):
             agent_turn(session, 'codebook_agent', 'prompt', [], payload,
                        PdfCodebookReply, dict(used=0, thread=1), model)
-            assert session.calls[-1]['model']=='gpt-6.1-sol'
+            assert session.calls[-1]['model']=='gpt-6.2-sol'
             assert session.calls[-1]['reasoning']=={'effort':'medium'}
 
         app=create_app(root/'runtime');client=app.test_client()

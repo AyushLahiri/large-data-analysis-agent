@@ -6,6 +6,8 @@
   let feedbackTurn = '';
   let requestedTree = '', treeDetails = null;
   let turnsKey = '', activeTurn = '', latestMessage = '';
+  let responseTick;
+  const costLabels = new Map();
   const folderOpen = new Map();
   const smallSampleLimit = 60;
 
@@ -464,14 +466,87 @@
   }
 
   /**
+   * Attach a saved table's identity and Visualize button to its rendered copy.
+   *
+   * Inputs: container holds the tables, refs follows their display order, turn
+   *     supplies the source folder, and running determines button availability.
+   * Returns: Nothing. Each matched table receives its saved ID as a data attribute.
+   * Details: Only the original gets an HTML id. The associated-table disclosure
+   *     points to the same source and can appear beside the original.
+   */
+  function attachTableActions(container, refs, turn, running, original = true) {
+    container.querySelectorAll('table').forEach((table, index) => {
+      const ref = refs[index];
+      const holder = table.closest('.analysis-table-wrap') || table;
+      if (!ref) {
+        // The manager assigns the parent and table IDs when the answer is complete.
+        if (running) holder.hidden = true;
+        return;
+      }
+      table.dataset.tableId = ref.table_id;
+      if (original) table.id = ref.table_id;
+      const strip = el('div', undefined, 'table-actions');
+      const action = el('button', 'Visualize', 'viz-button');
+      action.type = 'button';
+      action.disabled = running;
+      action.setAttribute('aria-label', 'Visualize ' + ref.title);
+      action.onclick = () => submitQuestion('', ref.table_id, turn?.folder || '');
+      const label = el('small', 'Table ' + ref.ordinal);
+      label.title = ref.table_id;
+      strip.append(action, label);
+      holder.before(strip);
+    });
+  }
+
+  /**
+   * Show a turn's response time and model cost under its answer.
+   *
+   * Inputs: target holds the turn's messages; question and reply carry saved UTC
+   *     timestamps; pending identifies the chat's current unanswered turn; turnId
+   *     selects its cost in snapshot.turn_costs.
+   * Returns: Nothing. A pending turn updates once a second. A visible reply or
+   *     stop message fixes the duration, including when the chat is reopened.
+   */
+  function showResponseTime(target, question, reply, pending, turnId) {
+    const start = Date.parse(question?.time);
+    const end = Date.parse(reply?.time);
+    if (!Number.isFinite(start) || (reply ? !Number.isFinite(end) : !pending)) return;
+    const row = el('div', undefined, 'run-metrics');
+    row.title = reply ? 'Response time and model cost' : 'Time awaiting response and model cost so far';
+    const value = el('time', undefined, 'run-metrics-value');
+    value.setAttribute('role', 'timer');
+    value.setAttribute('aria-live', 'off');
+    const cost = el('span', '', 'run-metrics-value');
+    costLabels.set(turnId, cost);
+    row.append(value, cost);
+    target.append(row);
+    function update() {
+      const seconds = Math.max(0, Math.floor(((reply ? end : Date.now()) - start) / 1000));
+      const minutes = Math.floor(seconds / 60);
+      value.textContent = `⏱︎ ${minutes ? `${minutes} min ${seconds % 60} s` : `${seconds} s`}`;
+      value.dateTime = `PT${seconds}S`;
+    }
+    update();
+    if (!reply) responseTick = setInterval(update, 1000);
+  }
+
+  /** Refresh turn costs in place, so a running turn's cost updates without rebuilding the chat. */
+  function updateCosts() {
+    for (const [turnId, label] of costLabels) {
+      const cost = snapshot?.turn_costs?.[turnId];
+      label.hidden = cost === undefined;  // Turns from before cost tracking have no record.
+      label.textContent = `$${(cost || 0).toFixed(2)}`;
+    }
+  }
+
+  /**
    * Render analysis messages, results and turn groups.
    *
    * When: Polling, chat switching, feedback or submission changes the snapshot.
    * Inputs: Reads snapshot, chatId, submission/stop state and render signatures.
-   * Returns: Nothing; updates composer controls, logs/transcript links and chat DOM.
-   * Flow: Groups progress and related turns, attaches tables/methods/ratings and preserves
-   *     scroll unless a new answer should be shown. Delegates navigation state to
-   *     renderTurns/selectTurn.
+   * Returns: Nothing. Updates the composer, navigation, links and chat DOM.
+   * Flow: Group related turns, attach tables, methods and ratings, and mount
+   *     cached visualization cards. Preserve scroll unless a new answer arrives.
    */
   function renderChat() {
     const messages = snapshot?.messages || [];
@@ -494,15 +569,18 @@
     transcript.hidden = !snapshot?.transcript_path;
     if (!transcript.hidden) transcript.href = endpoint(`download/${snapshot.transcript_path}`);
     renderTurns(turns);
-    const key = JSON.stringify([chatId, messages, turns.map(turn => [turn.parent_id, turn.feedback])]);
-    if (key === chatKey) return;
+    const key = JSON.stringify([chatId, running, messages, turns.map(turn => [turn.parent_id, turn.feedback])]);
+    if (key === chatKey) return updateCosts();
     chatKey = key;
+    clearInterval(responseTick);
+    costLabels.clear();
     const chat = $('analysis-chat');
     const atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 100;
     const latest = messages.findLast(message => message.kind !== 'thinking')?.id || '';
     const newMessage = latest !== latestMessage;
     latestMessage = latest;
     const oldScroll = chat.scrollTop;
+    chatCharts.setChat(projectId + '/' + chatId);
     chat.replaceChildren();
     if (!chatId) {
       const empty = el('div', undefined, 'empty-chat');
@@ -510,6 +588,14 @@
       chat.append(empty);
     }
     const byId = new Map(turns.map(turn => [turn.id, turn]));
+    const replies = new Map();
+    const questions = new Map(messages.map(message => [message.id, message]));
+    // The reply can already be visible while the manager is still archiving the turn.
+    for (const msg of messages) {
+      if (msg.turn_id && msg.agent !== 'You' && msg.kind !== 'thinking' && !replies.has(msg.turn_id)) {
+        replies.set(msg.turn_id, msg);
+      }
+    }
     let thinking = null, group, parentId, turnId, target = chat, palette = 0;
     for (const message of messages) {
       const turn = byId.get(message.turn_id);
@@ -536,14 +622,12 @@
           group.append(thinking);
           target.append(group);
         }
-        thinking.append(thinkingStep(message));
+        const step = thinkingStep(message);
+        attachTableActions(step, message.details?.table_assets || [], turn, running);
+        thinking.append(step);
         continue;
       }
       thinking = null;
-      if (message.kind === 'scope') {
-        target.append(scopeNotice(message));
-        continue;
-      }
       const user = message.agent === 'You';
       const wrap = el('article', undefined, `message ${user ? 'user' : ''} ${message.kind === 'error' ? 'error' : ''}`);
       wrap.append(el('span', user ? 'You' : 'Analysis', 'author'));
@@ -553,39 +637,27 @@
       for (const result of message.details?.tables || []) wrap.append(renderTable(result, message.details?.decimal_places));
       const method = renderMethod(message);
       if (method) wrap.append(method);
-      if (turn && message.agent === 'analysis_orchestrator') wrap.append(renderFeedback(turn));
+      attachTableActions(wrap, message.details?.table_assets || [], turn, running);
+      const viz = message.details?.visualization;
+      if (viz) wrap.append(chatCharts.panel(endpoint(`analysis/chats/${chatId}/visualizations/${viz.turn_id}`), viz.table_id, table => {
+        const source = renderTable(table, table.decimal_places);
+        attachTableActions(source, [table], byId.get(table.turn_id), $('analysis-send').disabled, false);
+        return source;
+      }));
+      if (turn && ['analysis_orchestrator', 'formatter', 'analysis_agent', 'visualizer'].includes(message.agent)) wrap.append(renderFeedback(turn));
       target.append(wrap);
+      if (turn && message === replies.get(turn.id)) showResponseTime(target, questions.get(turn.question_id), message, false, turn.id);
     }
+    const last = turns.at(-1);
+    if (active && last && !replies.has(last.id)) {
+      const pendingTarget = document.getElementById(`analysis-turn-${last.id}`);
+      if (pendingTarget) showResponseTime(pendingTarget, questions.get(last.question_id), null, true, last.id);
+    }
+    updateCosts();
+    for (const button of chat.querySelectorAll('.table-actions button')) button.disabled = running;
     selectTurn(newMessage ? '' : activeTurn);
     chat.scrollTop = atBottom || newMessage ? chat.scrollHeight : oldScroll;
     chatScroll();
-  }
-
-  /**
-   * Build the collapsible notice shown when the folder scope changes between questions.
-   *
-   * Inputs: message: scope message with details.project_name and details.tree folder records.
-   * Returns: Unattached disclosure listing the project and its folders.
-   * Details: Selected items get a soft highlight; the project itself is highlighted when every
-   *     folder is selected.
-   */
-  function scopeNotice(message) {
-    const {project_name: projectName, tree = []} = message.details || {};
-    const notice = disclosure(`analysis-scope-${message.id}`, message.text || 'Updated folder scope', 'scope-notice');
-    const item = (label, selected) => el('span', label, `scope-notice-item${selected ? ' is-selected' : ''}`);
-    const root = el('ul', undefined, 'scope-notice-tree');
-    const project = el('li');
-    project.append(item(projectName || 'Entire project', tree.length > 0 && tree.every(entry => entry.selected)));
-    const folders = el('ul');
-    for (const entry of tree) {
-      const row = el('li');
-      row.append(item(entry.name, entry.selected));
-      folders.append(row);
-    }
-    project.append(folders);
-    root.append(project);
-    notice.append(root);
-    return notice;
   }
 
   /**
@@ -759,25 +831,29 @@
   /**
    * Submit a question in the selected chat and scope.
    *
-   * When: The analysis composer is submitted.
-   * Inputs: event: form submission; reads text, chatId and folder.
-   * Returns: Promise with no value; marks the chat running and refreshes, or keeps an error.
-   * Flow: Blocks overlapping submissions, moves to the latest turn, and clears text only
-   *     after the server accepts the request.
+   * When: The user submits the composer or clicks a table's Visualize button.
+   * Inputs: text is the typed question, tableId optionally selects a saved table,
+   *     and scope is the folder for this request.
+   * Returns: Promise that refreshes the chat on success or displays the error.
+   * Flow: Measure the message width for chart review, block concurrent submissions
+   *     and send the request. Table clicks preserve any draft in the composer.
    */
-  $('analysis-form').onsubmit = async event => {
-    event.preventDefault();
-    const input = $('analysis-question'), id = projectId, text = input.value.trim();
-    if (!chatId || !text || submittingQuestion || ['running', 'stopping'].includes(snapshot?.status)) return;
+  async function submitQuestion(text, tableId = null, scope = folder) {
+    const input = $('analysis-question'), id = projectId;
+    if (!chatId || (!text && !tableId) || submittingQuestion || ['running', 'stopping'].includes(snapshot?.status)) return;
+    const message = (tableId && document.getElementById(tableId)?.closest('.message')) ||
+      [...$('analysis-chat').querySelectorAll('.analysis-turn-content .message:not(.user)')].at(-1) ||
+      $('analysis-chat').querySelector('.message:not(.user)');
+    const chartWidth = message ? Math.round(message.getBoundingClientRect().width) : undefined;
     $('analysis-error').textContent = '';
     selectTurn('');
     $('analysis-chat').scrollTop = $('analysis-chat').scrollHeight;
     submittingQuestion = true;
     renderChat();
     try {
-      await api(endpoint(`analysis/chats/${chatId}`), {folder, text});
+      await api(endpoint(`analysis/chats/${chatId}`), {folder: scope, text, table_id: tableId, chart_width: chartWidth});
       if (projectId === id) {
-        input.value = '';
+        if (!tableId) input.value = '';
         snapshot = {...snapshot, status:'running'};
         await refresh();
       }
@@ -787,6 +863,10 @@
       submittingQuestion = false;
       if (projectId === id) renderChat();
     }
+  }
+  $('analysis-form').onsubmit = event => {
+    event.preventDefault();
+    submitQuestion($('analysis-question').value.trim());
   };
 
   /**
@@ -883,6 +963,8 @@
      * Details: Exposed as window.analysisView.reset for the project workspace in app.js.
      */
     reset() {
+      clearInterval(responseTick);
+      chatCharts.setChat('');
       folder = ''; snapshot = null; treeKey = ''; chatKey = ''; greetingRequested = false;
       chats = null; chatId = ''; chatListKey = ''; checking = null;
       stopRequest = '';

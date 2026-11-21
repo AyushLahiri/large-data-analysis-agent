@@ -37,6 +37,12 @@ def run():
         write_json(root/'manifest.json', {'tables': [{'columns': [{'name': name, 'type': 'numeric'} for name in names]}]})
 
         class Session:
+            def begin_phase(self, *args):
+                """Ignore chat phase timing in this test."""
+
+            def close_phase(self):
+                """Ignore chat phase timing in this test."""
+
             def message(self, *args):
                 """Skip UI/journal output in the final-codebook test.
 

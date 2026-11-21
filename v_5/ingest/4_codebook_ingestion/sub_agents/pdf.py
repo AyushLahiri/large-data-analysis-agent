@@ -8,7 +8,8 @@ from .agent import (PDF_CODEBOOK_PROMPT, PDF_CODEBOOK_MERGE_PROMPT, PDF_CODEBOOK
 from .pdf_calls import PdfCalls
 from .pdf_state import Checkpoints, atomic_text, digest, file_lock, fresh_cycle, new_agent, save_json
 
-PDF_BLOCK_SIZE, PDF_MAX_BLOCKS, PDF_MERGE_BATCH_SIZE = 10, 15, 30
+# Five pages per reader keeps each Luna conversation short; 100 pages need 20 readers.
+PDF_BLOCK_SIZE, PDF_MAX_BLOCKS, PDF_MERGE_BATCH_SIZE = 5, 20, 30
 
 
 def extract_pdf_block(checkpoint, number, pages, filename, block_size, read_prompt, merge_prompt):

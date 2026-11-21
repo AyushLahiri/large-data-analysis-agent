@@ -19,6 +19,7 @@ def review_materials(session):
         and preserves their settled placement. The main ingester receives reused ingestion
         and descriptive notes; a saved handoff skips review on preparation retry.
     """
+    session.begin_phase('Ingestor')
     project = session.state['context']
     folders = session.state['folders']
     files = session.state['files']

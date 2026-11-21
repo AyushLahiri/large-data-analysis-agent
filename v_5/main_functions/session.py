@@ -9,7 +9,7 @@ from openai.lib._parsing._responses import type_to_text_format_param
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
-from v_5.app.config import MODEL, api_key
+from v_5.app.config import MODEL, PRICES, api_key
 from v_5.app.docker import run_code
 from v_5.main_functions.agent import GLITCH_PROMPT, GlitchReply
 
@@ -42,6 +42,21 @@ def loader_request(prompt, history, contract=None):
     if contract is not None:
         request['text'] = {'format': type_to_text_format_param(contract)}
     return request
+
+
+def usage_cost(model, usage):
+    """Price one model response in US dollars.
+
+    Inputs: model: response model name; usage: Responses API usage dict.
+    Returns: Dollar cost, or 0 for a model without a listed price.
+    Details: Cached input tokens are part of input_tokens and are charged at the cached rate.
+    """
+    price = next((value for name, value in PRICES.items() if model.startswith(name)), None)
+    if not price or not usage:
+        return 0.0
+    cached = (usage.get('input_tokens_details') or {}).get('cached_tokens') or 0
+    fresh = usage.get('input_tokens', 0) - cached
+    return (fresh * price[0] + cached * price[1] + usage.get('output_tokens', 0) * price[2]) / 1_000_000
 
 
 def count_input(request):
@@ -77,6 +92,7 @@ class Session:
         self.cancelled = threading.Event()
         self.analysis_error_count = 0
         self._cancel_operation = None
+        self.phase_request = None
         self.run_path = directory / 'runs' / datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S_%fZ')
         self.run_path.mkdir(parents=True)
         self.sequence = 0
@@ -150,9 +166,66 @@ class Session:
                        'kind': kind, 'details': details, 'time': datetime.now(timezone.utc).isoformat()}
             if self.turn_id:
                 message['turn_id'] = self.turn_id
+            phase = None if self.analysis else self.open_phase()
+            if phase is not None:
+                message['phase'] = phase
             self.state['messages'].append(message)
             self.save()
             return message['id']
+
+    def begin_phase(self, label, folder=None):
+        """Hand ingestion work to a new phase for the chat's timer and cost.
+
+        Inputs: label: phase name shown in chat; folder: dataset folder, if any.
+        Returns: None. Closes the open phase now; the new phase is listed once it
+            produces a message or a priced response, so a phase that does no work is not shown.
+        """
+        with self.lock:
+            self.close_phase()
+            self.phase_request = {'label': label, 'folder': folder,
+                                  'started': datetime.now(timezone.utc).isoformat()}
+
+    def open_phase(self):
+        """Return the index of the open ingestion phase, listing a requested one first."""
+        with self.lock:
+            phases = self.state.setdefault('phases', [])
+            if self.phase_request:
+                phases.append({**self.phase_request, 'ended': None, 'cost': 0.0, 'responses': []})
+                self.phase_request = None
+            return len(phases) - 1 if phases and not phases[-1]['ended'] else None
+
+    def close_phase(self):
+        """Stop the open phase's timer when work moves on or the run ends."""
+        with self.lock:
+            self.phase_request = None
+            phases = self.state.get('phases') or []
+            if phases and not phases[-1]['ended']:
+                phases[-1]['ended'] = datetime.now(timezone.utc).isoformat()
+                self.save()
+
+    def add_cost(self, model, usage, response_id):
+        """Add one model response's price to the open phase or analysis turn.
+
+        Inputs: model and usage from the response; response_id prevents counting a
+            retrieved background response twice.
+        Returns: None. Ingestion adds to state phases; analysis adds to turn_costs.
+        """
+        cost = usage_cost(model, usage)
+        with self.lock:
+            if self.analysis:
+                if self.turn_id:
+                    costs = self.state.setdefault('turn_costs', {})
+                    costs[self.turn_id] = costs.get(self.turn_id, 0.0) + cost
+            else:
+                index = self.open_phase()
+                if index is None:
+                    return
+                phase = self.state['phases'][index]
+                if response_id in phase['responses']:
+                    return
+                phase['responses'].append(response_id)
+                phase['cost'] += cost
+            self.save()
 
     def check_stop(self):
         """Stop work when the user has requested cancellation.
@@ -256,10 +329,11 @@ class Session:
             request = {**request, 'max_output_tokens': max_output_tokens}
         self.record('request', name, request)
         if self.analysis:
-            response = self.analysis_request(lambda client: client.responses.create(**request, store=False))
+            response = self.analysis_request(lambda client: client.responses.create(**request, store='conversation' in request))
         else:
             response = OpenAI(api_key=api_key()).responses.create(**request, store=False)
         self.record('response', name, response.model_dump())
+        self.add_cost(response.model, response.usage.model_dump() if response.usage else None, response.id)
         if self.analysis:
             self.check_stop()
         text = response.output_text
@@ -301,16 +375,23 @@ class Session:
             thinking = name.startswith(('agent_', 'data_loader', 'descriptives', 'codebook_', 'pdf_codebook', 'loader_summarizer', 'glitch')) and payload.get('action') not in {'clarify', 'finish', 'stop', 'confirm', 'handoff'}
             self.message(name, message, 'thinking' if thinking else 'chat', payload if thinking else None)
 
-    def ask_agent(self, name, prompt, history, contract, *, allow_user_questions=True):
+    def ask_agent(self, name, prompt, history, contract, *, allow_user_questions=True, conversation=None):
         """Get a validated structured reply and extend the conversation.
 
-        Inputs: name/prompt: agent identity and instructions; history: mutable messages;
-            contract: response model; allow_user_questions: UI permission.
-        Returns: Reply dict matching contract; appends its assistant message to history.
-        Details: Wraps call_loader with an 8,000-token output limit. Incomplete or invalid
-            responses raise rather than entering the workflow.
+        Inputs: name and prompt identify the role and its instructions. history contains
+            the messages to send, contract defines the reply, and allow_user_questions
+            controls presentation. conversation optionally identifies an existing API thread.
+        Returns: A validated reply dict. Appends the assistant response to history.
+        Details: Uses an 8,000-token output limit. The visualizer requests high
+            reasoning effort. With a conversation ID, instructions and new input
+            are sent separately and the API retains the earlier exchanges.
         """
-        text, usage, status = self.call_loader(name, loader_request(prompt, history, contract), 8000,
+        request = loader_request(prompt, history, contract)
+        if name == 'visualizer':
+            request['reasoning'] = {'effort': 'high'}
+        if conversation:
+            request.update(instructions=prompt, input=history.copy(), conversation=conversation)
+        text, usage, status = self.call_loader(name, request, 8000,
                                                allow_user_questions=allow_user_questions)
         if status != 'completed':
             raise RuntimeError(f'{name} returned an incomplete response. See the saved response.')

@@ -242,7 +242,7 @@ def checked_sql(code, catalog, allow_preview, *, join_checks=None):
     if not folders:
         raise ValueError('Query at least one scoped data table.')
     if len(folders) > 1 and join_checks is None:
-        raise ValueError('Read the cross_folder_joins skill before querying multiple folders.')
+        raise ValueError('Read the general/cross_folder_joins skill before querying multiple folders.')
     if len(folders) > 1:
         join_checks.extend(cross_folder_join_checks(statements[0].stmt, allowed))
     # Map parsed column references back to real table columns for the SQL reviewer's evidence payload.
@@ -300,10 +300,11 @@ def pull_frame(catalog, folder, requested, weight, destination):
 
     Inputs: catalog/folder: scoped dataset; requested: variables; weight: optional weight
         variable; destination: output path.
-    Returns: Frame metadata with file, folder, rows, columns and primary_key; writes the
-        Parquet file.
+    Returns: Frame metadata with file, folder, rows, columns, primary_key and the
+        (table, column) sources read; writes the Parquet file.
     Details: Analyst.python uses this after choosing weights. Resolves variables, joins
         table parts on all keys and enforces row/cell limits before sandbox execution.
+        NUMERIC values are written as floats.
     """
     data = catalog.folders[folder]
     tables = {item['name']: item for item in data['tables']}
@@ -340,9 +341,12 @@ def pull_frame(catalog, folder, requested, weight, destination):
         if len(rows) > FRAME_ROWS:
             raise ValueError('This Python frame is too large. Use Atlas to aggregate first.')
         columns = list(selected)
-        values = {name: [row[index] for row in rows] for index, name in enumerate(columns)}
+        # NUMERIC arrives as Decimal, which pandas cannot combine with float columns such as weights.
+        values = {name: [float(row[index]) if isinstance(row[index], Decimal) else row[index] for row in rows]
+                  for index, name in enumerate(columns)}
         pq.write_table(pa.table(values), destination)
-    return {'file': destination.name, 'folder': folder, 'rows': len(rows), 'columns': columns, 'primary_key': [key.casefold() for key in keys]}
+    return {'file': destination.name, 'folder': folder, 'rows': len(rows), 'columns': columns,
+            'primary_key': [key.casefold() for key in keys], 'sources': list(selected.values())}
 
 
 SAFE_OPERATORS.update({'BETWEEN', 'NOT BETWEEN', 'BETWEEN SYMMETRIC', 'NOT BETWEEN SYMMETRIC'})

@@ -21,6 +21,12 @@ class Failure(RuntimeError):
 class Session:
     """Supply app interactions while counting user reviews and honoring Stop."""
 
+    def begin_phase(self, *args):
+        """Ignore chat phase timing in this test."""
+
+    def close_phase(self):
+        """Ignore chat phase timing in this test."""
+
     def __init__(self):
         """Start one isolated user-review and cancellation state."""
         self.state, self.answers, self.stopped = {}, 0, False
@@ -234,32 +240,31 @@ def retry_branches(root):
                 session.stopped = True
         try:
             run_app(case, book, session, api, hook)
+            stopped = False
         except (Failure, ValueError, InterruptedError):
-            pass
-        else:
-            raise AssertionError(problem)
+            stopped = True
+        # Rejected replies are corrected in the same thread; only interruptions stop the run.
+        assert stopped == (problem in ('expired', 'stop')), problem
         saved = read_json(case / 'reconciliation_checkpoint.json')
         if problem == 'stop':
             assert saved['agent']['output_received'] and not saved['matched']
             session.stopped = False
         if problem == 'expired':
+            # An expired response is sent again with the recovery note instead of stopping.
             del api.responses[saved['agent']['response_id']]
-            try:
-                run_app(case, book, session, api)
-            except RuntimeError as error:
-                assert 'expired' in str(error)
-            else:
-                raise AssertionError('Expired receipt was accepted')
-        before_search = sum(payload.get('stage') == 'search' for _, payload, _ in api.requests)
         run_app(case, book, session, api)
         assert read_json(case / 'reconciliation_checkpoint.json')['phase'] == 'complete'
         assert session.answers == 1
+        feedback = [payload.get('feedback', '') for _, payload, _ in api.requests]
+        if problem == 'syntax':
+            assert any(text.startswith('Your last response was rejected') for text in feedback)
         if problem == 'soft':
-            assert before_search == 1
-            assert sum(payload.get('stage') == 'search' for _, payload, _ in api.requests) == 3
+            decisions = [payload for _, payload, _ in api.requests if payload.get('stage') == 'reconcile']
+            assert len(decisions) == 2 and 'own searches' in decisions[1]['feedback']
+            assert sum(payload.get('stage') == 'search' for _, payload, _ in api.requests) == 1
         if problem == 'stop':
             assert len(api.requests) == 16
-        assert all(request['model'] == 'gpt-6.1-sol' and request['reasoning']['effort'] == 'medium'
+        assert all(request['model'] == 'gpt-6.2-sol' and request['reasoning']['effort'] == 'medium'
                    for _, _, request in api.requests)
     print('PASS malformed output, unsupported soft match, expired receipt and Stop/retry')
 

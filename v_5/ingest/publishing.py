@@ -144,7 +144,7 @@ def collect_outputs(project, state, plan, publication=None):
                 definition = columns[column]
                 identifier(column)
                 prepared_sql_type({**definition, 'name': column})
-                key = (definition.get('original_name') or column).lower()
+                key = column.lower()
                 locations.setdefault(key, []).append((table_name, column, definition.get('type') or definition.get('sql_definition') or definition.get('sql_type')))
             data.append({'dataset_id': dataset_id, 'dataset_name': name, 'folder': folder, 'name': table_name, 'path': path,
                          'columns': columns, 'row_count': row_count, 'primary_key': table['primary_key']})

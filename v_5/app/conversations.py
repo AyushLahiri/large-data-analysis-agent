@@ -76,6 +76,9 @@ class ConversationCalls:
                 self.check_stop()
             response = self.client.responses.retrieve(response_id)
             if response.status not in ('queued', 'in_progress'):
+                add_cost = getattr(self.session, 'add_cost', None)
+                if add_cost:  # Test sessions without pricing skip it.
+                    add_cost(response.model, response.usage.model_dump() if response.usage else None, response.id)
                 return {'id': response.id, 'status': response.status,
                         'output_text': response.output_text,
                         'usage': response.usage.model_dump() if response.usage else None}

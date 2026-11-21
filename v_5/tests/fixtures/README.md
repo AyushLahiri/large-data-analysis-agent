@@ -10,6 +10,15 @@ The workbook and DCT differ on bill, occupants and insulation. Each documents so
 
 Run python -m v_5.tests.energy_fixture to regenerate the data, DCT and report without creating app projects. The workbook is a saved test fixture.
 
+## Checking a chart in the Energy chat
+
+After publishing Energy, ask for separate tables of household counts by income
+group and by home comfort response. Click **Visualize** above the income table.
+Open **View associated table** and compare its row labels and counts with the
+income table in the original answer. Then ask in the same chat for the income
+groups to appear in descending order of count. The revised chart should open
+against the same source table.
+
 ### Energy master-reconciler cases
 
 Workbook revision 3 and the DCT include seven deliberate soft-match cases. Upload the updated codebooks and ingest them afresh to see the new definitions. Data files and the PDF are unchanged. These are expected decisions for manual comparison, not live model results.

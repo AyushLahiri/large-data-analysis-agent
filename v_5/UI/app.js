@@ -6,7 +6,7 @@
  * Details: Shared shorthand used by both UI scripts.
  */
 const $ = id => document.getElementById(id);
-let token = '', projectId = '', state = null, busy = false, polling = false, submitting = false;
+let token = '', projectId = '', state = null, busy = false, polling = false, submitting = false, liveMetrics = [];
 let renameFolder = '', deleteTarget = null;
 let nameMode = 'new', uploadFolder = '', uploadPrimary = false, uploadDefault = 'columns';
 let selectedFiles = [], chatSignature = '', treeSignature = '', phaseSignature = '', atlasSignature = '', formId = '';
@@ -50,19 +50,6 @@ function frozenFolders() {
   return new Set([...lockedFolders(), ...Object.entries(state?.folders||{}).filter(([,folder])=>folder.setup_reviewed||folder.setup_complete).map(([name])=>name)]);
 }
 
-/**
- * Create an element with optional plain text and CSS classes.
- *
- * Inputs: tag: element name; text: optional text; className: optional classes.
- * Returns: Unattached DOM element.
- * Details: Shared rendering helper. textContent treats supplied text as text, not HTML.
- */
-function el(tag, text, className) {
-  const element = document.createElement(tag);
-  if (text !== undefined) element.textContent = text;
-  if (className) element.className = className;
-  return element;
-}
 /**
  * Create a button with shared asynchronous error handling.
  *
@@ -435,20 +422,53 @@ function thinkingStep(message) {
  * Details: Groups progress into disclosures and completed-folder segments; stays at the
  *     bottom only if the user was already there.
  */
+/**
+ * Show one ingestion phase's elapsed time and model cost below its messages.
+ *
+ * Inputs: index into state.phases; lastTime is the phase's latest message time.
+ * Returns: The metrics row. An open phase counts up each second while ingestion runs;
+ *     one left open by an interrupted run stops at its last message.
+ */
+function phaseMetrics(index, lastTime) {
+  const phase = state.phases?.[index];
+  if (!phase) return '';
+  const row = el('div', undefined, 'run-metrics');
+  const time = el('span', '', 'run-metrics-value');
+  row.append(el('span', phase.folder ? `${phase.label} · ${folderLabel(phase.folder)}` : phase.label, 'run-metrics-label'),
+    time, el('span', `$${phase.cost.toFixed(2)}`, 'run-metrics-value'));
+  const start = Date.parse(phase.started);
+  const end = phase.ended ? Date.parse(phase.ended) : busy ? null : Date.parse(lastTime);
+  const update = () => { time.textContent = `⏱︎ ${formatDuration(((end ?? Date.now()) - start) / 1000)}`; };
+  update();
+  if (end === null) liveMetrics.push(update);
+  return row;
+}
+/** Format seconds as "N s" or "N min N s". */
+function formatDuration(total) {
+  const seconds = Math.max(0, Math.floor(total)), minutes = Math.floor(seconds / 60);
+  return minutes ? `${minutes} min ${seconds % 60} s` : `${seconds} s`;
+}
 function renderChat() {
   const messages = state?.messages || [];
-  const signature = JSON.stringify([messages, messages.filter(m => m.kind === 'folder_complete').map(m => folderLabel(m.details.folder))]);
+  const signature = JSON.stringify([messages, state?.phases, busy, messages.filter(m => m.kind === 'folder_complete').map(m => folderLabel(m.details.folder))]);
   if (signature === chatSignature) return; chatSignature = signature;
   const chat = $('chat'), atBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight < 100;
-  const oldScroll = chat.scrollTop; chat.replaceChildren();
+  const oldScroll = chat.scrollTop; chat.replaceChildren(); liveMetrics = [];
   if (!messages.length) {
     const welcome = el('div', undefined, 'empty-chat');
     welcome.append(el('span','✧','empty-icon'), el('strong', state ? 'Let’s get to know your data.' : 'Every dataset has a story.'),
       el('p', state ? 'Add your materials on the right, then start ingestion. We’ll ask only when your input is needed.' : 'Create a project to bring your files together and begin a conversation.'));
     chat.append(welcome); return;
   }
-  let group = null, content = null, segment = document.createDocumentFragment();
+  let group = null, content = null, segment = document.createDocumentFragment(), phase;
+  const lastTime = {};
+  for (const m of messages) if (m.phase != null) lastTime[m.phase] = m.time;
   messages.forEach((m, index) => {
+    // A phase's time and cost follow its last message, before the next phase starts.
+    if (m.phase != null && m.phase !== phase) {
+      if (phase != null) segment.append(phaseMetrics(phase, lastTime[phase]));
+      phase = m.phase; group = null;
+    }
     const completed = m.kind === 'folder_complete';
     if (completed) {
       const folder = disclosure(`chat-folder-${m.id}`, folderLabel(m.details.folder), 'chat-folder');
@@ -469,6 +489,7 @@ function renderChat() {
     const wrap = el('div', undefined, `message ${user?'user':''} ${m.agent==='app'?'error':''}`);
     wrap.append(el('span', user ? 'You' : 'Workspace', 'author'), user || completed ? el('div',m.text,'bubble') : formattedMessage(publicText(m.text),'bubble')); segment.append(wrap);
   });
+  if (phase != null) segment.append(phaseMetrics(phase, lastTime[phase]));
   chat.append(segment);
   chat.scrollTop = atBottom ? chat.scrollHeight : oldScroll;
 }
@@ -1362,4 +1383,4 @@ $('stop').onclick=()=>perform(async()=>{
  * Flow: Loads status before listProjects so subsequent writes have X-V5-Token; startup
  *     errors go to fail.
  */
-(async()=>{try{token=(await api('/api/status')).token;await listProjects();render();setInterval(()=>refresh().catch(fail),2000);}catch(e){fail(e);}})();
+(async()=>{try{token=(await api('/api/status')).token;await listProjects();render();setInterval(()=>refresh().catch(fail),2000);setInterval(()=>liveMetrics.forEach(update=>update()),1000);}catch(e){fail(e);}})();

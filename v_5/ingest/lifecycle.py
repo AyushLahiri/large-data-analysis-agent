@@ -83,7 +83,7 @@ def reset_ingestion(path, state):
     state['findings'] = {key: value for key, value in state.get('findings', {}).items()
                          if state['files'].get(key, {}).get('folder') in published}
     for key in ('handoff_path', 'codebook_resume', 'loader_resume', 'atlas_handoff_path', 'loader_budget',
-                'log_directory', 'project_notes', 'error', 'activity', 'ingestion_changed'):
+                'log_directory', 'project_notes', 'error', 'activity', 'ingestion_changed', 'phases'):
         state.pop(key, None)
     for name, folder in state['folders'].items():
         if name not in published:

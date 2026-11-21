@@ -10,4 +10,5 @@ openpyxl>=3.1,<4
 xlrd>=2,<3
 reportlab>=4,<6
 pglast>=7,<8
-psycopg2-binary>=2.9,<3
+markdown-it-py>=3,<5
+playwright>=1.50,<2

@@ -82,17 +82,18 @@ v_5/
     prototype/            Legacy notebook helpers and compatibility imports
   analyse/
     1_main/
-      agent.py            Orchestrator and analyst prompts and contracts
+      agent.py            Orchestrator, analyst and formatter prompts and contracts
       analyst.py          Analyst actions and skill loading
       workflow.py         Orchestration of analysis requests
       memory.py           Context accounting and completed-turn rollover
       execution.py        SQL validation, execution and Python-frame extraction
-      skills/             Existing analysis skill text
-      sub_agents/         SQL reviewer and execution-error diagnostics
+      skills/             Analyst method guides (general/, stats_methods/)
+      sub_agents/         SQL review, glitch diagnostics and visualizer prompts, contracts and worker
     2_managers/
       agent.py            Session manager prompt and response contracts
       turns.py            Turn grouping, navigation, summaries and transcripts
       chats.py            Chat records and their SQL persistence
+      tables.py           Local source tables, stable IDs and parent-turn context
       routes.py           Analysis chat HTTP endpoints and job management
     3_manageSQLassets/
       catalog.py          Atlas metadata, codebooks and variable search
@@ -109,6 +110,8 @@ v_5/
     sandbox/              Docker image and package requirements
     runtime/              Projects, uploads, logs, outputs and analysis artifacts
   UI/                     Browser HTML, JavaScript, styles and vendor assets
+    analysis.js           Chat messages, table actions and visualization requests
+    charts.js             Chart card shared by chat and Chrome draft previews
   main.py                 Mixed application entry point and project HTTP routes
   tests/                  Offline checks and manual-upload fixtures
   ingestion.ipynb         String-only PDF-worker checkpoint/recovery experiment
@@ -126,9 +129,9 @@ spans all prepared folders.
 The ingestion agent, loader, descriptives reviewer and final codebook agent are
 the main phase agents. Context checking, file findings, loader summaries,
 structured/PDF codebook extraction, PDF reconciliation and planning overviews
-are subordinate calls. Analysis keeps the orchestrator and analyst together;
-SQL review and error diagnostics are subordinate calls. The session manager has
-its own home in `2_managers`.
+are subordinate calls. The analysis orchestrator routes questions to the analyst.
+SQL review, error diagnosis, answer formatting and table visualization have
+dedicated workers. The session manager lives in `2_managers`.
 
 Numbered directories use readable Python package aliases registered in the
 parent `__init__.py`. For example:
@@ -154,12 +157,17 @@ current output/table and accumulated master/notes. Readers and final cross-reade
 batches use `sent`, `output_received`, `table_created`, `merged`. The within-reader
 child has only the first three flags: its parent owns the master update. Children
 have no separate range; final reconciliation tracks its 30-variable batch range.
-The existing 250,000-token agent budget is retained with cumulative usage and the
-current pending request's reservation; unknown submissions retain that reservation.
+Each reader covers five pages (up to 20 readers for the 100-page maximum), so a Luna
+conversation stays short. Each agent has a 350,000-token budget of cumulative usage and
+the current pending request's reservation; unknown submissions retain that reservation.
 Data and flags are saved together. Restarting continues the saved phase and range;
 completed pages are not replayed. Advancing replaces the previous cycle. Chats stay
 in API conversations; there are no local chat copies or per-call archives.
 Known responses are retrieved; unknown submissions are retried in the same thread.
+A rejected reply (incomplete, invalid JSON, blank or repeated variable names, or a
+merger's wrong variables) or an expired response is asked again in the same thread with
+the exact problem; `rejections` and `feedback` are saved with the agent, and the third
+rejection stops the run. Final-codebook and soft-match calls follow the same rule.
 Final exports are the joined table, normalized table, master rows, notes and verification.
 The app's Prepare data retry follows the saved `codebook_resume` workspace pointer
 and skips the already-confirmed loader/review. Editing source metadata or starting
@@ -181,52 +189,71 @@ A descriptives correction returns to the same loader loop. Each folder is
 published before the next folder is prepared; the final summary covers the
 completed project.
 
-### File previews and parsing context
-
-Initial ingestion reads each file once with a fixed, bounded reader from `readers.py`.
-File reviewers cannot run code; they interpret these previews:
-
-- CSV/TSV: `read_delimited` sends raw, unparsed lines, the first 10 and up to 10 sampled,
-  with line numbers and the physical `line_count`. Bytes are decoded as UTF-8, so
-  undecodable bytes appear as `�`. Lines over 2,000 characters are cut and carry
-  `clipped_chars`.
-- Excel: `read_table` previews the first 6 sheets in workbook order, each with up to
-  5 rows from the first 10 and up to 10 sampled columns, the first row read as the
-  header. Later sheets list only their name and shape. An unreadable sheet has `read_error`.
-- SPSS/Stata: 5 rows from up to 20 sampled columns, with embedded definitions and
-  all-row statistics for those columns.
-- PDF: the first 3 and up to 5 sampled pages. Text, DCT/DCF, MAP and DAT: the first 30
-  and up to 30 sampled lines.
-
-Each format prompt in `1_initial_ingestion/sub_agents/agent.py` states exactly what was
-sent and how it was decoded. Every `FileReply` includes `parser_rules`: up to five
-bullets of at most 30 words on what code must handle to read that file, such as the
-delimiter, encoding, header location, relevant sheets, layouts, missing codes and leading
-zeros. Files that no code will read, such as reports, return an empty list.
-
-The ingestion handoff saves findings and previews by file ID. The loader receives them
-unchanged, as `files[<id>].finding` and `initial_file_context[<id>]`, with `/input/...`
-paths. No reading functions are prepared for it: it confirms reader settings with its
-own code. It reads a codebook only when a reading, key or type decision needs it, with
-narrow code that returns the minimal rows, lines or pages. Full codebook extraction
-stays in phase 4, where `codebook_table_agent` receives its own finding and preview in
-`source_file` as leads to confirm. PDF codebooks use the fixed page-by-page reader and
-do not consume parser rules. Handoffs saved before this change keep their older preview
-shapes and have no `parser_rules`; the loader passes on whatever was saved.
-
 The loader retains its 250,000-token session budget and 8,000-token turn output
 reserve. Its subagent summarizes history in 60,000-character chunks, retaining
 saved work and the latest payload. Codebook calls have their own 250,000-token
 budget in `4_codebook_ingestion/sessions.py`; only existing supported callers
-roll over. Analysis uses its separate 800,000-token context accounting and
-completed-turn rollover in `1_main/memory.py`. Turn grouping and persistent chat
-records remain in `2_managers`.
+roll over. Each analysis chat keeps separate GPT-6.2 Sol API conversations for its
+orchestrator and analyst. Each role rolls over at an 800,000-token context window,
+including an 8,000-token response allowance. The orchestrator resumes from its last
+five question exchanges, including its own recall steps and replies. The analyst
+resumes with ten completed-turn summaries and the preceding ten headers and can
+request more detail by turn ID. Each delegated question includes up to ten previously
+selected variables in scope. A fresh GPT-6 Luna formatter at `xhigh` writes the
+answer from the analyst's handoff. Turn grouping and persistent chat records live
+in `2_managers`.
 
 `main_functions` contains shared workflow support. `app` contains configuration,
 database connectivity, sandbox infrastructure and runtime assets. Publication
 SQL stays in ingestion; analysis catalog/join operations stay in analysis;
 chat-specific SQL stays with chat management. The `Session` API delegates its
 ingestion-specific state updates to the relevant phase without changing callers.
+
+In analysis chat, a small timer under each answer counts seconds from the
+question until the first visible reply. At one minute it displays minutes and
+remaining seconds. Its duration comes from the saved question and reply
+timestamps, so it is available when the chat reopens. Beside it is the turn's
+model cost in dollars (input, cached input and output tokens at the `PRICES`
+rates in `app/config.py`), kept per turn in `turn_costs`.
+
+Ingestion chat shows the same time and cost for each phase under that phase's
+messages: Ingestor, Loader, Descriptives, Codebook tables and Codebook
+reconciliation, per folder. A phase's timer runs until work is handed to the
+next phase; Atlas publication is not counted. Stop and Retry ingestion share one
+action row above the reply box.
+
+### Analysis tables and visualizations
+
+The analyst names which executed SQL or Python result each answer table shows; the app copies
+its rows rather than having the model retype them. A Python run can return several results. The data columns those results read, with
+their codebook descriptions, become the turn's selected variables.
+
+Each table receives a `<chat_id>_<parent_id>_<source_turn_id>_<table_id>`
+identifier. For example, the second table in a turn ends in `table_002`.
+Its columns, rows, display precision and full ID live in the chat directory at
+`tables/<source_turn_id>_table_002.json`. Regrouping the source turn preserves
+the issued ID.
+
+Clicking **Visualize** selects the table directly. For a typed request the
+orchestrator resolves the table in the current analysis scope. Both paths give
+the analyst the selected table and its source-turn summary. The analyst passes
+on any data-specific guidance. The visualizer also receives the source turn's
+current parent group for context. Each chat reuses one GPT-6.2 Sol visualizer
+conversation at `high` reasoning effort, including for edits. The analyst's
+handoff instructions are `VISUALIZATION_BRIEF` in [sub_agents/agent.py](analyse/1_main/sub_agents/agent.py).
+
+The worker runs Python in the existing Docker sandbox with the selected table
+mounted read-only. Headless Chrome renders each proposed view with the same
+card component as chat. The worker receives a PNG at the requested card width,
+sampled values and diagnostics for clipping and overlapping labels. It can
+revise the Python and inspect the next render. Failed drafts enter the shared
+glitch-agent error path. The output contract and design guidance are `VISUALIZER`
+and its contracts in [sub_agents/agent.py](analyse/1_main/sub_agents/agent.py).
+
+Publishing writes the Python, one to three chart views and the source table ID
+to `visualizations/<publication_turn_id>.json`. An edit gets its own publication
+turn. Switching views or palettes, hovering over a point and opening **View
+associated table** use data already loaded in the browser.
 
 ## Logs and artifacts
 
@@ -323,10 +350,13 @@ python -B -m v_5.tests.loader_checkpoint_check --app
 python -B -m v_5.tests.loader_checkpoint_check --app --docker
 python -B -m v_5.tests.analysis_turns_check
 python -B -m v_5.tests.variable_picker_check
+python -B -m v_5.tests.visualization_check
 python -B -m v_5.tests.ui_check
 ```
 
-The checks simulate model calls and use temporary projects. The browser check
-requires Playwright and local Chrome. Manual-upload fixtures remain under
-`tests/fixtures/`. Live database, Docker and paid model integrations are separate
-from these offline checks.
+The checks above simulate model calls. The browser checks require Playwright
+and local Google Chrome. `visualization_check` also runs the configured Docker
+sandbox image. It exercises table selection, a typed revision on the same
+visualizer, glitch recovery, screenshot width and the interactive card in a
+temporary project. The `--docker` checks also require Docker. Manual-upload
+fixtures are described in the [fixture README](tests/fixtures/README.md).

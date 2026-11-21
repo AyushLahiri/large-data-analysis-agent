@@ -1,12 +1,17 @@
 import psycopg2
 import re
+from openai import OpenAIError
 from v_5.analyse.general import ResultLimit, progress
-from v_5.analyse.main.agent import ORCHESTRATOR, OrchestratorReply
-from v_5.analyse.main.analyst import Analyst, scope_update
+from v_5.analyse.main.agent import FORMATTER, ORCHESTRATOR, FormatterReply, OrchestratorReply
+from v_5.analyse.main.analyst import Analyst
 from v_5.analyse.main.memory import AnalysisMemory, user_message
 from v_5.analyse.sql_assets.catalog import AtlasCatalog, codebook_themes, read_atlas
 from v_5.analyse.sql_assets.joins import save_join_rules
+from v_5.analyse.managers.tables import table_index
+from v_5.analyse.main.sub_agents.visualizer import visualize_table
+from v_5.app.config import FORMATTER_MODEL
 from v_5.ingest.summary import SUMMARY_FILE
+from v_5.main_functions.session import loader_request
 
 
 def project_markdown(path):
@@ -53,7 +58,7 @@ def published_scope(session, project, selected_folder):
 def answer_text(message, outcome):
     """Remove duplicate table and method text from an answer.
 
-    Inputs: message: orchestrator text; outcome: analyst handoff with optional structured
+    Inputs: message: answer text; outcome: analyst handoff with optional structured
         tables.
     Returns: Narrative text, or a short fallback when only structured content remains.
     Details: Used before publishing the final message because the UI renders outcome tables
@@ -70,48 +75,88 @@ def answer_text(message, outcome):
     return '\n'.join(lines).strip() or 'Here are the results.'
 
 
-def analyse(session, project, folder, question):
+def format_answer(session, question, outcome, decimal_places):
+    """Format an analyst's completed handoff for display in chat.
+
+    Inputs: session supplies the model caller, question is the user's wording,
+        outcome contains the answer materials and decimal_places is the display precision.
+    Returns: The author and answer text to publish.
+    Flow: Send the materials to a fresh Luna formatter at xhigh effort. On an
+        empty or failed reply, record the fallback and use the analyst's message.
+    """
+    materials = {key: value for key, value in outcome.items() if not key.startswith('join_') and key != 'continued_weights'}
+    request = loader_request(FORMATTER, [user_message({'question': question, 'analyst_response': materials,
+                                                      'display_decimal_places': decimal_places})], FormatterReply)
+    request.update(model=FORMATTER_MODEL, reasoning={'effort': 'xhigh'})
+    try:
+        text, _, status = session.call_loader('formatter', request, 8000, allow_user_questions=False)
+        if status == 'completed':
+            message = FormatterReply.model_validate_json(text).message.strip()
+            if message:
+                return 'formatter', message
+        reason = f'No formatted answer returned ({status}).'
+    except (OpenAIError, ValueError) as error:
+        reason = str(error)
+    session.check_stop()
+    session.record('formatting_fallback', 'formatter', {'reason': reason})
+    return 'analysis_agent', outcome['message']
+
+
+def analyse(session, project, folder, question, *, table_id=None):
     """Coordinate one user-facing analysis answer.
 
     When: The chat route starts an opening message or a new question.
     Inputs: session: chat runtime; project: published project; folder: optional scope;
-        question: user text, empty for opening.
-    Returns: None; saves an orchestrator message containing narrative, tables, method and
-        display metadata.
-    Flow: Seeds memory and scope, lets the orchestrator recall or delegate to Analyst, then
-        relays validated outcomes. Saves confirmed join notes and reports size/clarification
-        limits to the user.
+        question: user text, empty for opening. table_id selects a saved table
+        when the user clicks Visualize.
+    Returns: None; saves the answer, structured tables, method and display metadata.
+    Flow: A table click goes directly to the analyst's visualization handoff.
+        For typed questions the orchestrator can answer, select a table for the
+        same handoff or delegate an analysis whose results go to the formatter.
     """
+    memory = AnalysisMemory(session)
+    if table_id:
+        visualize_table(session, memory, folder, question, table_id)
+        return
     progress(session, 'Understanding your question' if question else 'Getting oriented',
              'Identifying what the question needs.' if question else 'Reading the project summary and available topics.')
     markdown = project_markdown(session.path)
-    memory = AnalysisMemory(session)
-    change = scope_update(session) if question else None
-    history = memory.seed({'project_markdown': markdown, 'project_name': project['context']['name'],
+    available = table_index(session.state, folder)
+    allowed_ids = {item['table_id'] for item in available}
+    charts = [{'turn_id': msg.get('turn_id'), 'table_id': viz['table_id'], 'titles': [view['title'] for view in viz['views']]}
+              for msg in session.state.get('messages', []) if (viz := (msg.get('details') or {}).get('visualization'))
+              and viz['table_id'] in allowed_ids]
+    history = [user_message({'turn_id': session.turn_id, 'project_markdown': markdown, 'project_name': project['context']['name'],
                            'selected_folder': folder or None, 'published_scope': published_scope(session, project, folder),
                            'saved_weights': session.state.get('weights', {}),
-                           **({'scope_update': change} if change else {}),
-                           'question': question, 'opening_turn': not bool(question)})
+                           'available_tables': available, 'recent_visualizations': charts[-10:],
+                           'question': question, 'opening_turn': not bool(question)})]
     outcome = {}
+    author = 'analysis_orchestrator'
     decimal_places = 2
     for turn in range(8):
         reply = memory.ask('analysis_orchestrator', ORCHESTRATOR, history, OrchestratorReply)
         if turn == 0:
             precision = reply['decimal_places']
             decimal_places = None if precision is None else max(0, precision)
-        if outcome:
-            relay = reply['message'] if reply['action'] == 'answer' else ''
-            message = relay or outcome['message']
-            break
         if reply['action'] == 'recall_turn' and question:
             progress(session, 'Looking up a past turn', 'Checking the relevant earlier answer.')
             recalled = memory.recall('analysis_orchestrator', reply['recall'])
             session.record('analysis_recall', 'analysis_orchestrator', recalled)
             history.append(user_message({'turn_recall': recalled}))
             continue
+        if reply['action'] == 'visualize' and question:
+            if reply['request'] not in allowed_ids:
+                history.append(user_message({'error': 'Choose an exact available table ID, or clarify which table is intended.'}))
+                continue
+            memory.remember_orchestrator(history)
+            visualize_table(session, memory, folder, question, reply['request'])
+            return
         if reply['action'] != 'analyse' or not question:
+            memory.remember_orchestrator(history)
             message = reply['message'] or 'What would you like to explore in this project?'
             break
+        memory.remember_orchestrator(history)
         try:
             progress(session, 'Checking the selected data', 'Reading the published folders and table structure.')
             analyst = Analyst(session, AtlasCatalog(project, folder, session=session), question, memory=memory)
@@ -122,12 +167,11 @@ def analyse(session, project, folder, question):
             break
         session.record('analysis_handoff', 'analysis_agent', outcome)
         progress(session, 'Preparing your answer', 'Putting the findings together.')
-        # Join discoveries are persisted separately; the orchestrator receives only the answer material.
-        handoff = {key: value for key, value in outcome.items() if not key.startswith('join_')}
-        history.append(user_message({'analyst_response': handoff, 'display_decimal_places': decimal_places,
-                                     'request': 'Relay the findings and any limitations using answer.'}))
+        author, message = format_answer(session, question, outcome, decimal_places)
+        break
     else:
-        message = outcome.get('message') or 'Try narrowing the question to a particular figure or comparison.'
+        memory.remember_orchestrator(history)
+        message = 'Try narrowing the question to a particular figure or comparison.'
     message = answer_text(message, outcome)
     if outcome.get('continued_weights'):
         message += '\n\nContinuing with the same weight for ' + '; '.join(outcome['continued_weights']) + '.'
@@ -140,6 +184,6 @@ def analyse(session, project, folder, question):
             })
         if not outcome and reply['action'] == 'clarify':
             session.record('analysis_user_handoff', 'analysis_orchestrator', {'why_user': reply['why_user']})
-        session.message('analysis_orchestrator', message, details={'ran_analysis': outcome.get('ran_analysis', False),
+        session.message(author, message, details={'ran_analysis': outcome.get('ran_analysis', False),
                         'selected_variables': outcome.get('selected_variables', []),
                         'method': outcome.get('method'), 'tables': outcome.get('tables', []), 'decimal_places': decimal_places})

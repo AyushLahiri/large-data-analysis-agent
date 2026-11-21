@@ -10,7 +10,8 @@ from openai.lib._parsing._responses import type_to_text_format_param
 from v_5.ingest.codebook_ingestion.tables import normalize_rows
 
 FLAGS = ('sent', 'output_received', 'table_created', 'merged')
-SESSION_BUDGET = 250_000
+SESSION_BUDGET = 350_000
+MAX_REJECTIONS = 2  # Two corrected attempts after a rejected reply before the run stops.
 
 def read_json(path, default=None):
     """Read saved state, returning default only when the file does not exist.
@@ -160,9 +161,18 @@ class Checkpoints:
         Inputs: path selects the worker; prompt/payload/contract are unchanged agent inputs.
         Returns: Validated output, retrieved from the API or reused from this checkpoint.
         Known requests are retrieved. Unknown submissions retry in the same conversation.
-        The reserved tokens count against the existing 250,000-token agent budget until
+        The reserved tokens count against the 350,000-token agent budget until
         a known reply supplies its actual usage; no chat history is copied to disk.
+        A rejected reply or an expired response is asked again in the same thread, with
+        the exact problem, up to MAX_REJECTIONS times; the count and feedback are saved.
         """
+        while True:
+            result = self.attempt(path, unit, role, prompt, payload, contract, expected_names)
+            if result is not None:
+                return result
+
+    def attempt(self, path, unit, role, prompt, payload, contract, expected_names):
+        """Send or retrieve one request; return its validated output, or None to ask again."""
         self.provider.check_stop()
         agent = self.get(path)
         if agent['output_received']:
@@ -173,10 +183,13 @@ class Checkpoints:
             self.commit(path, {'thread_id': self.provider.new_thread()})
         agent = self.get(path)
         if not agent['sent']:
+            messages = [{'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}]
+            if agent.get('feedback'):
+                messages.insert(0, {'role': 'user', 'content': agent['feedback']})
             request = {'model': self.provider.model,
                        'reasoning': {'effort': 'high' if self.provider.model == 'gpt-6-luna' else 'medium'},
                        'instructions': prompt,
-                       'input': [{'role': 'user', 'content': json.dumps(payload, ensure_ascii=False)}],
+                       'input': messages,
                        'conversation': agent['thread_id'],
                        'text': {'format': type_to_text_format_param(contract)},
                        'max_output_tokens': self.provider.output_limit,
@@ -196,10 +209,10 @@ class Checkpoints:
         self.hook('before_retrieve', unit)
         try:
             response = self.provider.retrieve(agent['response_id'])
-        except self.provider.missing_response_error:
-            # A provider-expired response is no longer recoverable; retry the same input.
-            self.commit(path, fresh_cycle(child=agent['parent_id'] != '000'))
-            raise
+        except self.provider.missing_response_error as error:
+            # A provider-expired response is no longer recoverable; send the same input again.
+            self.reject(path, agent, name, agent['used_tokens'], error, '')
+            return None
         self.hook('after_reply_before_save', unit)
         usage = response.get('usage')
         used = agent['used_tokens']
@@ -207,19 +220,39 @@ class Checkpoints:
             used += usage['input_tokens'] + usage['output_tokens'] - agent['reserved_tokens']
         try:
             if response['status'] != 'completed':
-                raise ValueError('Model response ended with status ' + response['status'])
+                raise ValueError(f"the reply ended with status {response['status']} before it was complete, "
+                                 'often at the output limit. Return a complete reply with concise text fields')
             result = contract.model_validate_json(response['output_text']).model_dump()
             frame = normalize_rows(result['rows'])
             if expected_names is not None and set(frame.variable_name) != set(expected_names):
-                raise ValueError('Merger must return each supplied variable exactly once.')
-        except (ValueError, KeyError, TypeError):
-            self.commit(path, fresh_cycle(child=agent['parent_id'] != '000') | {'used_tokens': used})
-            raise
-        self.commit(path, {'output': result, 'output_received': 1,
-                           'used_tokens': used, 'reserved_tokens': 0}, unit, 'output')
+                returned = set(frame.variable_name)
+                raise ValueError('return each supplied variable exactly once. Missing: '
+                                 + (', '.join(sorted(set(expected_names) - returned)) or 'none') + '. Not supplied: '
+                                 + (', '.join(sorted(returned - set(expected_names))) or 'none'))
+        except (ValueError, KeyError, TypeError) as error:
+            self.reject(path, agent, name, used, error,
+                        f'Your previous reply was rejected: {error}. Answer the input below again.')
+            return None
+        self.commit(path, {'output': result, 'output_received': 1, 'used_tokens': used,
+                           'reserved_tokens': 0, 'rejections': 0, 'feedback': ''}, unit, 'output')
         self.provider.progress(name, payload, result, usage)
         self.provider.check_stop()  # Received output is durable; merging can resume on Retry.
         return result
+
+    def reject(self, path, agent, name, used, error, feedback):
+        """Save a rejected attempt so the same input is sent again with its feedback.
+
+        Inputs: the worker's path and state, its label, usage so far, the problem and the
+            message for the next attempt. Returns: None. Raises after MAX_REJECTIONS
+            corrected attempts; the count restarts so a later Retry gets its own attempts.
+        """
+        rejections = agent.get('rejections', 0) + 1
+        exhausted = rejections > MAX_REJECTIONS
+        self.commit(path, fresh_cycle(child=agent['parent_id'] != '000') | {
+            'used_tokens': used, 'rejections': 0 if exhausted else rejections, 'feedback': feedback})
+        if exhausted:
+            raise ValueError(f'{name}: the reply was rejected {rejections} times. Last problem: {error}') from error
+        self.provider.rejected(name, str(error), rejections)
 
     def table(self, path, unit):
         """Normalize the current reply and save its rows with table_created=1.

@@ -10,13 +10,13 @@ class AnalysisExecutionLimit(RuntimeError):
     pass
 
 
-def error_feedback(session, language, code, error):
+def error_feedback(session, language, code, error, *, agent='analysis_agent'):
     """Explain an execution error and enforce the per-question retry limit.
 
-    When: Analysis subagent glitch_agent, after SQL validation, SQL execution or Python
-        fails.
+    When: Analysis subagent glitch_agent, after SQL, Python or a visualization draft fails.
     Inputs: session: error counter/logging; language: failing operation; code:
-        executed/proposed source; error: exception.
+        executed/proposed source; error: exception. agent identifies the caller
+        in the execution log and the request to glitch_agent.
     Returns: Feedback dict with execution_error and optional error_review; raises
         AnalysisExecutionLimit on the fifth error.
     Flow: Logs the full failure, sends bounded error text and numbered code to the
@@ -24,7 +24,7 @@ def error_feedback(session, language, code, error):
     """
     session.check_stop()
     session.analysis_error_count += 1
-    session.record('execution_error', 'analysis_agent', {'language': language, 'code': code,
+    session.record('execution_error', agent, {'language': language, 'code': code,
                    'error': str(error), 'count': session.analysis_error_count})
     if session.analysis_error_count >= MAX_EXECUTION_ERRORS:
         raise AnalysisExecutionLimit('Analysis stopped after five execution errors. Please try again.')
@@ -32,7 +32,7 @@ def error_feedback(session, language, code, error):
     numbered = '\n'.join(f'{index}: {line}' for index, line in enumerate(code.splitlines(), 1))
     try:
         report = session.ask_agent('glitch_agent', GLITCH_PROMPT,
-                                   [user_message({'requesting_agent': 'analysis_agent', 'language': language,
+                                   [user_message({'requesting_agent': agent, 'language': language,
                                                   'executed_code': numbered, 'error_output': str(error)[:8000]})],
                                    GlitchReply, allow_user_questions=False)
         return {'execution_error': str(error)[:2000], 'error_review': report}

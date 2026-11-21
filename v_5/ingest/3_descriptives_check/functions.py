@@ -14,6 +14,7 @@ def review_prepared_data(session, context, prepared, files, workspace, review_di
         conversation. Raw execution is saved before glitch diagnosis. Docker reads prepared
         files without changing them and writes review evidence only under /review.
     """
+    session.begin_phase('Descriptives', context['folder'])
     initial_input = json.loads(json.dumps({
         'folder_context': context, 'loader_report': prepared,
         'instruction': 'Inspect these saved outputs, then ask the user to confirm the review.'}, default=str))

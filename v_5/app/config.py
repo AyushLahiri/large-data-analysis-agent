@@ -3,9 +3,12 @@ import os
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNTIME = Path(os.environ.get("V5_RUNTIME", ROOT / "app" / "runtime")).resolve()
-MODEL = "gpt-6.1-sol"
+MODEL = "gpt-6.2-sol"
+FORMATTER_MODEL = "gpt-6-luna"
 LOADER_SUMMARIZER_MODEL = "gpt-6-luna"
 CODEBOOK_PDF_MODEL = os.environ.get('V5_CODEBOOK_PDF_MODEL', 'gpt-6-luna')
+# US dollars per million tokens: (input, cached input, output). Output includes reasoning.
+PRICES = {"gpt-6.2-sol": (2.00, 0.10, 10.00), "gpt-6-luna": (0.10, 0.01, 0.50)}
 IMAGE = "atlas-v5-sandbox:local"
 MAX_UPLOAD_BYTES = 512 * 1024 * 1024
 FORMATS = {

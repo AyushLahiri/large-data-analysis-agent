@@ -16,18 +16,6 @@ from v_5.analyse.sql_assets.joins import JOIN_SKILL, candidate_identifiers, read
 from v_5.app.docker import run_code
 
 
-def scope_update(session):
-    """Return the folder-scope change saved on the current question's turn.
-
-    Inputs: session: analysis chat with turn_id and turns.
-    Returns: Dict with now_in_scope/previously_in_scope folder records, or None if unchanged.
-    Details: Set by the chat route when the user's selection differs from the previous
-        question; shared by the orchestrator and analyst seeds.
-    """
-    turn = next((item for item in session.state.get('turns', []) if item['id'] == session.turn_id), None)
-    return (turn or {}).get('scope_update')
-
-
 def format_method(method):
     """Normalize the method note shown with an analysis result.
 
@@ -68,26 +56,52 @@ class Analyst:
         self.memory = memory or AnalysisMemory(session)
         self.turns = 0
 
-    def selected_variables(self, items):
-        """Keep only reported variables that exist in the selected data.
+    def selected_variables(self, sources):
+        """Describe the data columns behind the results shown in the answer.
 
-        Inputs: items: selected-variable records from the analyst reply; uses catalog metadata.
-        Returns: Deduplicated list with valid folder/table/column locations and a type fallback.
+        Inputs: sources: (folder, table, column) locations read by those results.
+        Returns: Deduplicated selected-variable records using codebook descriptions and codes,
+            with a numeric/character fallback for uncoded columns.
         Details: Used in the final analyst handoff before turn management records variable
-            history.
+            history. Primary-key columns are row identifiers, so they are left out.
         """
+        by_folder = {}
+        for folder, table, column in sorted(sources):
+            keys = next(item['primary_key'] for item in self.catalog.folders[folder]['tables'] if item['name'] == table)
+            if column not in keys:
+                by_folder.setdefault(folder, {}).setdefault(table, []).append(column)
         selected = {}
-        for item in items:
-            folder = self.catalog.folders.get(item['folder'])
-            if not folder or item['table_name'] not in {table['name'] for table in folder['tables']}:
-                continue
-            kind = self.catalog.columns[item['table_name']].get(item['column_name'])
-            if not kind or not item['name'].strip():
-                continue
-            value_type = ('character' if kind in {'text', 'character', 'character varying'} else
-                          'numeric' if kind in {'integer', 'bigint', 'smallint', 'numeric', 'decimal', 'real', 'double precision'} else '')
-            selected.setdefault(variable_key(item), {**item, 'categories_or_type': item['categories_or_type'].strip() or value_type})
+        for folder, columns_by_table in by_folder.items():
+            for row in self.catalog.review_variables(folder, columns_by_table):
+                kind = row['variable_type']
+                value_type = ('character' if kind in {'text', 'character', 'character varying'} else
+                              'numeric' if kind in {'integer', 'bigint', 'smallint', 'numeric', 'decimal', 'real', 'double precision'} else '')
+                item = {'name': row.get('variable_name') or row['column_name'].casefold(), 'folder': folder,
+                        'table_name': row['table_name'], 'column_name': row['column_name'],
+                        'description': row.get('variable_description') or row.get('variable_label', ''),
+                        'categories_or_type': row.get('categories') or value_type}
+                selected.setdefault(variable_key(item), item)
         return list(selected.values())
+
+    def shown_tables(self, requested, results):
+        """Build the answer tables from executed results.
+
+        Inputs: requested: result number, title, optional headers and sample columns from
+            the analyst; results: this question's successful SQL/Python results.
+        Returns: Table dicts with the result's rows and the requested display headers.
+        Details: Rows are copied from the result, never retyped by the model.
+        """
+        tables = []
+        for item in requested:
+            if not 1 <= item['result'] <= len(results):
+                raise ValueError(f"Choose a result number from 1 to {len(results)}.")
+            source = results[item['result'] - 1]
+            if item['columns'] and len(item['columns']) != len(source['columns']):
+                raise ValueError(f"Result {item['result']} has {len(source['columns'])} columns. Give one header for each, or none to keep them.")
+            tables.append({'title': item['title'], 'columns': item['columns'] or list(source['columns']),
+                           'rows': [list(row) for row in source['rows']],
+                           'unweighted_sample_columns': item['unweighted_sample_columns']})
+        return tables
 
     def python(self, reply, active_weights, work):
         """Run a calculation on temporary frames from Atlas.
@@ -95,8 +109,9 @@ class Analyst:
         When: Analysis main agent chooses action=python after scope and weight checks.
         Inputs: reply: requested frames and code; active_weights: folder selections; work:
             temporary run directory.
-        Returns: Validated columns/rows plus diagnostics; raises for execution, JSON or size
-            failures.
+        Returns: (tables, diagnostics, sources): validated columns/rows tables, the script's
+            diagnostics and the (folder, table, column) locations read; raises for execution,
+            JSON or size failures.
         Flow: pull_frame writes selected columns, Docker runs read-only with cancellation, then
             temporary frames are removed. Parses full output only within the existing size
             bound.
@@ -124,14 +139,16 @@ class Analyst:
             if log.stat().st_size > 2_000_000:
                 raise ValueError('Python output was too long. Return only the exact shape and essential diagnostics.')
             output = log.read_text(encoding='utf-8')
-        # Python must print a table payload: columns and rows, with optional shape and diagnostics.
+        # Python prints one table (columns and rows) or a tables list, with optional shape and diagnostics.
         payload = json.loads(output)
         if 'shape' in payload and (payload['shape']['rows'] > MAX_ROWS or payload['shape']['columns'] > MAX_COLUMNS):
             raise ResultLimit(payload['shape']['rows'], payload['shape']['columns'])
-        if result.get('truncated') and len(payload['rows']) <= MAX_ROWS and len(payload['columns']) <= MAX_COLUMNS:
+        tables = payload['tables'] if 'tables' in payload else [payload]
+        if result.get('truncated') and all(len(t['rows']) <= MAX_ROWS and len(t['columns']) <= MAX_COLUMNS for t in tables):
             raise ValueError('Python output text was too long. Keep the table cells and diagnostics brief.')
-        checked = result_table(payload['columns'], payload['rows'])
-        return {**checked, 'diagnostics': payload.get('diagnostics', {})}
+        checked = [result_table(table['columns'], table['rows']) for table in tables]
+        sources = {(frame['folder'], table, column) for frame in frames.values() for table, column in frame['sources']}
+        return checked, payload.get('diagnostics', {}), sources
 
     def run(self, task, allow_preview, *, decimal_places=2):
         """Choose variables, execute calculations and assemble an evidence-based answer.
@@ -148,15 +165,15 @@ class Analyst:
         session, catalog = self.session, self.catalog
         active_weights = {key: dict(val) for key, val in session.state.get('weights', {}).items() if key in catalog.folders}
         pending_weights, weight_folders, results = {}, set(), []
-        loaded_skills = set()
-        change = scope_update(session)
-        history = self.memory.seed({'original_user_question': self.question, 'relayed_user_request': task,
-                                    'scope': catalog.context(), 'saved_weights': active_weights,
-                                    'raw_preview_allowed': allow_preview, 'display_decimal_places': decimal_places,
-                                    **({'scope_update': change} if change else {})})
+        # Guides read earlier in this analyst conversation are still in its context.
+        read_skills = self.memory.budgets.setdefault('analysis_agent', {'generation': 1, 'used_tokens': 0}).setdefault('read_skills', [])
+        loaded_skills = set(read_skills)
         recent = recent_variables_text(session.state, catalog.folders)
-        if recent:
-            history.append({'role': 'user', 'content': recent})
+        history = [user_message({'turn_id': session.turn_id, 'original_user_question': self.question,
+                                 'relayed_user_request': task, 'scope': catalog.context(), 'saved_weights': active_weights,
+                                 'recent_variables': recent, 'raw_preview_allowed': allow_preview,
+                                 'visualization_agent': session.state.get('visualization_agent') or 'no viz agent active',
+                                 'display_decimal_places': decimal_places})]
         prompt = '\n\n'.join([ANALYST, SCHEMA_GUIDE, SQL_RULES, (SKILL_PATH / 'catalog.md').read_text(encoding='utf-8')])
 
         for _ in range(28):
@@ -217,11 +234,19 @@ class Analyst:
                 elif action == 'read_skill':
                     if reply['skill'] not in SKILLS:
                         raise ValueError(f"Choose an available skill: {', '.join(SKILLS)}.")
+                    *folder, name = reply['skill'].split('/')
+                    main = '/'.join(folder + folder[-1:])
+                    if len(folder) > 1 and name != folder[-1] and main not in loaded_skills:
+                        raise ValueError(f'Read {main} before its sub-method guides.')
                     if reply['skill'] == JOIN_SKILL and len(catalog.folders) < 2:
                         raise ValueError('Cross-folder joins require project scope with at least two published folders.')
                     loaded_skills.add(reply['skill'])
-                    progress(session, 'Choosing a method', f"Checking the guidance for {SKILLS[reply['skill']]}.")
-                    feedback = {'skill': (SKILL_PATH / (reply['skill'] + '.md')).read_text(encoding='utf-8')}
+                    if reply['skill'] in read_skills:
+                        feedback = {'skill': 'You already read this guide in this chat. Use it from your context.'}
+                    else:
+                        read_skills.append(reply['skill'])
+                        progress(session, 'Choosing a method', f"Checking the guidance for {SKILLS[reply['skill']]}.")
+                        feedback = {'skill': (SKILL_PATH / (reply['skill'] + '.md')).read_text(encoding='utf-8')}
                     if reply['skill'] == JOIN_SKILL:
                         feedback.update(candidate_identifiers=candidate_identifiers(catalog),
                                         saved_join_rules=read_join_rules(catalog))
@@ -272,20 +297,26 @@ class Analyst:
                             session.record('analysis_code', 'analysis_agent', {'language': action, 'code': code, 'folders': sorted(folders)})
                             if action == 'sql':
                                 progress(session, 'Running the query', 'Calculating the result in Atlas.')
-                                outcome = execute_sql(code, session=session, join_checks=join_checks or ())
+                                outcomes, diagnostics = [execute_sql(code, session=session, join_checks=join_checks or ())], {}
+                                owner = {table['name']: folder for folder in folders for table in catalog.folders[folder]['tables']}
+                                sources = {(owner[table], table, column) for table, columns in query_columns.items() for column in columns}
                             else:
                                 progress(session, 'Running Python', 'Preparing the selected columns and running the calculation in the sandbox.')
                                 work = session.run_path / f'python_{self.turns:03}'
                                 work.mkdir()
-                                outcome = self.python(reply, active_weights, work)
-                            session.record('analysis_execution_result', 'analysis_agent', {'language': action, **outcome})
-                            results.append(outcome)
-                            shape = {'rows': len(outcome['rows']), 'columns': len(outcome['columns'])}
+                                outcomes, diagnostics, sources = self.python(reply, active_weights, work)
+                            numbered = []
+                            for outcome in outcomes:
+                                results.append({**outcome, 'sources': sources})
+                                numbered.append({'result_number': len(results), **outcome})
+                            session.record('analysis_execution_result', 'analysis_agent',
+                                           {'language': action, 'results': numbered, 'diagnostics': diagnostics})
+                            shape = [{'rows': len(outcome['rows']), 'columns': len(outcome['columns'])} for outcome in outcomes]
                             progress(session, 'Calculation complete',
-                                     f"Received a {shape['rows']:,} × {shape['columns']:,} result.",
-                                     code=code, result=shape)
+                                     ' '.join(f"Received a {item['rows']:,} × {item['columns']:,} result." for item in shape),
+                                     code=code, result=shape[0] if len(shape) == 1 else shape)
                             weight_folders.update(folders)
-                            feedback = {'execution_result': outcome}
+                            feedback = {'execution_results': numbered, **({'diagnostics': diagnostics} if diagnostics else {})}
                         except (InterruptedError, ResultLimit):
                             raise
                         except JoinCardinalityError as error:
@@ -293,13 +324,9 @@ class Analyst:
                         except (ValueError, OSError, psycopg2.Error) as error:
                             feedback = error_feedback(session, action, reply['code'], error)
                 else:
-                    tables = reply['tables']
+                    tables = self.shown_tables(reply['tables'], results)
                     ran_analysis = reply['ran_analysis'] and bool(results)
                     method = format_method(reply['method']) if ran_analysis else None
-                    if tables and not results:
-                        raise ValueError('A result table needs a successful query or Python result.')
-                    for table in tables:
-                        result_table(table['columns'], table['rows'])
                     total_rows = sum(len(table['rows']) for table in tables)
                     if total_rows > MAX_ROWS:
                         raise ResultLimit(total_rows, max(len(table['columns']) for table in tables))
@@ -314,7 +341,6 @@ class Analyst:
                         if not 1 <= len(rules) <= 10 or any(len(rule.split()) > 30 for rule in rules):
                             raise ValueError('Return 1 to 10 join rule bullets of at most 30 words each.')
                         join_report = {'join_success': 'yes', 'join_folders': folders, 'join_rules_discovered': rules}
-                    catalog.label_tables(tables, weight_folders)
                     previous = session.state.get('weights', {})
                     used = {folder: active_weights[folder] for folder in weight_folders}
                     continued = [f"{catalog.folders[folder]['name']} — {weight['label']}" for folder, weight in used.items()
@@ -322,7 +348,8 @@ class Analyst:
                     session.check_stop()
                     session.state.setdefault('weights', {}).update({key: value for key, value in pending_weights.items() if key in used})
                     return {'message': reply['message'], 'ran_analysis': ran_analysis, 'method': method, 'tables': tables,
-                            'selected_variables': self.selected_variables(reply['selected_variables']),
+                            'selected_variables': self.selected_variables(
+                                {source for item in reply['tables'] for source in results[item['result'] - 1]['sources']}),
                             'continued_weights': continued, **join_report}
             except ResultLimit:
                 raise
@@ -333,7 +360,31 @@ class Analyst:
         return {'message': 'I couldn’t complete that analysis with the available information.'}
 
 
-SKILLS = {'general': 'general analysis and cross-tabs', 'tests': 'hypothesis tests', JOIN_SKILL: 'cross-folder joins'}
+# Paths under skills/ without .md. A method's sub-method guides need its main guide, which shares its folder name.
+SKILLS = {
+    'general/general': 'general analysis and cross-tabs',
+    JOIN_SKILL: 'cross-folder joins',
+    'stats_methods/hypothesis_correlation/hypothesis_correlation': 'hypothesis tests and correlations',
+    'stats_methods/hypothesis_correlation/tests': 'group comparisons and categorical tests',
+    'stats_methods/hypothesis_correlation/correlation': 'correlations',
+    'stats_methods/regression/regression': 'regression analysis',
+    'stats_methods/regression/linear': 'linear regression',
+    'stats_methods/regression/logistic': 'logistic regression',
+    'stats_methods/regression/penalized': 'lasso, ridge and elastic net',
+    'stats_methods/clustering/clustering': 'clustering',
+    'stats_methods/clustering/kmeans': 'k-means clustering',
+    'stats_methods/clustering/hierarchical': 'hierarchical clustering',
+    'stats_methods/clustering/density': 'density-based clustering',
+    'stats_methods/clustering/mixture': 'Gaussian mixture clustering',
+    'stats_methods/classical_ml/classical_ml': 'classical machine learning',
+    'stats_methods/classical_ml/random_forest': 'random forests',
+    'stats_methods/classical_ml/gradient_boosting': 'gradient boosting',
+    'stats_methods/classical_ml/decision_tree': 'decision trees',
+    'stats_methods/classical_ml/knn': 'k-nearest neighbours',
+    'stats_methods/classical_ml/svm': 'support vector machines',
+    'stats_methods/classical_ml/naive_bayes': 'naive Bayes',
+    'stats_methods/classical_ml/neural_net': 'simple neural networks'
+}
 
 
 SKILL_PATH = Path(__file__).with_name('skills')

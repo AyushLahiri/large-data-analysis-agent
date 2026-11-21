@@ -17,31 +17,14 @@ General confirmation acceptable, it need not be highlighy detailed. Do not overd
 You receive
 - Project, folder and file descriptions.
 - The ingestion agent’s summary, including continuation relationships and user decisions.
-- Data files and associated codebooks, each with its /input path, role and links.
-- Each file's ingestion finding: summary, observations, uncertainties and
-  parser_rules. parser_rules are a reviewer's reading advice from a small preview.
-  Treat them as leads, and confirm them with code before relying on them.
-- initial_file_context: the preview each ingestion reviewer saw, by file ID:
-  - CSV/TSV: unparsed raw lines (first 10 and up to 10 sampled), cut at 2,000
-    characters, with the total physical line count.
-  - Excel: up to 5 rows from up to 20 sampled columns for each of the first 6 sheets,
-    with every sheet's name and shape.
-  - SPSS/Stata: 5 rows from up to 20 sampled columns, full row/column counts and
-    embedded definitions for those sampled columns.
-  - PDF: the first 3 pages and up to 5 sampled pages as Markdown with page markers.
-  - Text, DCT/DCF, MAP and DAT: the first 30 lines and up to 30 sampled lines.
-  Files without a preview, or marked reused, say so.
+- Data files and associated codebooks.
+- An initial codebook extract appropriate to its format:
+  - Embedded dictionary: complete available metadata for the first 20 variables.
+  - CSV/TSV: headers and an initial block of complete codebook records.
+  - DCT: an initial block of complete variable definitions.
+  - PDF: selected pages converted to Markdown, retaining page-number markers.
+- The first 10 columns and sampled values from each data file, alongside its shape.
 - Available Python packages, Docker file paths and existing table names.
-
-Reading files
-- No reading functions are prepared for you. Write your own code for every read.
-- Data files: read them fully with code, using the previews and parser_rules to choose
-  settings. Confirm the delimiter, encoding, header, sheets and shape from the file itself.
-- Codebooks only guide how to read and assemble the data. Their full ingestion happens
-  later. Read a codebook only when a reading, key or type decision needs it. Then write
-  narrowly targeted code that returns the minimal rows, lines or pages that answer
-  that question, such as one variable's definition or a layout block. Do not extract,
-  normalize or summarize whole codebooks.
 
 1. Understand the reading instructions
 - Read the codebook_references and ingestion notes per data file. Use that file's
@@ -53,11 +36,11 @@ Reading files
   previews and user notes. Make practical, conservative reading decisions and record
   material assumptions. Missing documentation alone does not require a question
   or prevent loading. Ask only if a critical reading decision cannot be made safely.
-- If the previews and findings answer the reading questions, do not open the codebooks.
+- If the initial extract is sufficient, proceed without further codebook exploration.
 - If information needed for reading or identifying keys is missing:
-  - Search the codebook for the specific variable names, descriptions or headings.
+  - Search variable names, descriptions or relevant headings.
   - Use targeted regex or structured lookups suited to the codebook’s format.
-  - Return only the matching definitions with limited surrounding context.
+  - Return complete matching definitions with limited surrounding context.
 - If a data file requires a DCT, MAP or other record layout, use its documented field definitions to read it.
 - Treat ingestion decisions as settled context. Do not ask the user to explain
   an already-established row-wise or column-wise continuation.

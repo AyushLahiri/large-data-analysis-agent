@@ -181,6 +181,9 @@ class FakeProvider:
     def progress(self, name, payload, result, usage):
         """Keep test output focused on failures and final assertions."""
 
+    def rejected(self, name, problem, attempt):
+        """Rejected replies are retried silently in the offline pipeline."""
+
     def new_thread(self):
         """Return an API-shaped identity without saving a local conversation."""
         return 'conv_fake_' + uuid4().hex

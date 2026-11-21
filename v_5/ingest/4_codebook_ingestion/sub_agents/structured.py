@@ -11,17 +11,12 @@ def structured_codebook(session, file, files, context, prepared, workspace, dire
     When: Phase 4 codebook_table_agent, selected by ingest_codebooks.
     Inputs: session/file/files: services and sources; context/prepared: folder decisions and
         loader report; workspace/directory: output paths; environment: installed packages.
-        source_file also carries this codebook's ingestion finding (with parser_rules) and
-        reviewer preview, when the saved context has them.
     Returns: Normalized source DataFrame, with notes and verification saved alongside it.
     Flow: StructuredRunner retains the thread, pending reply, code result and glitch report.
         Code runs in the existing read-only sandbox; a partial final export is overwritten.
         Prompt, reply contract, Sol/medium settings and the 250k rollover budget are unchanged.
     """
-    # The ingestion reviewer's finding (with parser_rules) and preview sit beside the file itself.
-    initial = {'source_file': {**file, 'path': f"/input/{file['file_id']}{Path(file['path']).suffix}",
-                               'finding': context.get('files', {}).get(file['file_id'], {}).get('finding', {}),
-                               'ingestion_preview': context.get('initial_file_context', {}).get(file['file_id'])},
+    initial = {'source_file': {**file, 'path': f"/input/{file['file_id']}{Path(file['path']).suffix}"},
         'folder_context': context, 'loader_report': prepared,
         'saved_turns': '/work/' + directory.relative_to(workspace).as_posix(),
         'continuation': 'Read saved prior feedback/code when needed; reuse completed work.'}

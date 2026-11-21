@@ -179,6 +179,7 @@ def finalize_codebook(session, context, prepared, workspace, book):
         Lookahead stays in the same thread; saved user answers survive retries. Final CSVs
         are cheap exports and are rewritten if saving them fails.
     """
+    session.begin_phase('Codebook reconciliation', context.get('folder'))
     directory = Path(book['combined']).parent
     checkpoint = ReconciliationCheckpoint(directory, session)
     progress = checkpoint.state
@@ -189,8 +190,7 @@ def finalize_codebook(session, context, prepared, workspace, book):
         types = {}
         for table in manifest['tables']:
             for name, column in manifest_columns(table).items():
-                original = column.get('original_name') or name
-                types.setdefault(original.lower(), column.get('type') or column.get('sql_type', ''))
+                types.setdefault(name.lower(), column.get('type') or column.get('sql_type', ''))
         combined['variable_type'] = combined['variable_name'].map(types).fillna('')
     master = combined[MASTER_FIELDS]
     types = master.set_index('variable_name')['variable_type'].to_dict()
