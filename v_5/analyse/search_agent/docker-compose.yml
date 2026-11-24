@@ -1,0 +1,29 @@
+name: atlas-v5-search
+services:
+  app:
+    build: .
+    image: atlas-v5-search:local
+    restart: unless-stopped
+    init: true
+    user: node
+    working_dir: /tmp
+    command: ["node", "/app/dist/server.js"]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,size=192m
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 1g
+    pids_limit: 128
+    environment:
+      OPENAI_API_KEY: ${OPENAI_API_KEY:?Set the v5 OpenAI key}
+      V5_ANALYSIS_SEARCH_TOKEN: ${V5_ANALYSIS_SEARCH_TOKEN:?Start through start.ps1 or set the internal token}
+      OPENAI_SEARCH_MODEL: ${OPENAI_SEARCH_MODEL:-gpt-4.1-mini}
+      TZ: America/New_York
+    volumes:
+      - research-data:/data/research
+    ports:
+      - "127.0.0.1:8767:3000"
+
+volumes:
+  research-data:
